@@ -173,6 +173,41 @@ test('project status reports the immutable workspace and cwd changes cannot expa
     const restored=await f.run('recoverable_restore',{id,reason:'inside recovery'});assert.equal(restored.isError,false,text(restored));const listing=await f.run('recovery_list',{});const record=listing.value.recent.find(e=>e.id===id);assert.equal(record.restoreDestination,source);assert.equal(record.audit.state,'complete');assert.equal(record.audit.transactionId,restored.value.audit.transactionId);
   }finally{await f.ctx.fiber.dispose();}
 });
+async function queryFootprint(f){
+  const names=(await fs.readdir(f.config.vaultRoot,{recursive:true})).sort(),files=[];
+  for(const name of names){if(name===path.join('state','plugin-live.json')||name.endsWith('.tmp'))continue;const file=path.join(f.config.vaultRoot,name);if((await fs.lstat(file)).isFile())files.push([name,(await fs.readFile(file)).toString('base64')]);}
+  return files;
+}
+test('project queries after restart find persisted records before any open and agree without writing metadata',async()=>{
+  let f=await setup({projectRecovery:true});const original=f;
+  try{
+    const file=path.join(f.workspace,'persisted-status.txt');await fs.writeFile(file,'persistent status sample');const removed=await f.run('recoverable_delete',{paths:[file],reason:'status restart fixture'});assert.equal(removed.isError,false,text(removed));const id=removed.value.entries[0].id;
+    const restored=await f.run('recoverable_restore',{id,reason:'status receipt fixture'});assert.equal(restored.isError,false,text(restored));
+    await f.vault.snapshot(path.join(f.workspace,'persisted-status.txt'),{owner:'legacy',reason:'unrelated global record'});
+    await f.ctx.fiber.dispose();f=await setup({projectRecovery:true,existing:original});const before=await queryFootprint(f);const canaryBefore=await fs.stat(path.join(f.projectVault.root,'protection-canary.txt'));
+    const status=await f.run('recovery_status',{});assert.equal(status.isError,false,text(status));assert.equal(status.value.projectVault,f.projectVault.root);assert.equal(status.value.projectVaultState,'ready');assert.equal(status.value.recentSource,'project');assert(status.value.recent.some(e=>e.id===id));assert(status.value.recent.every(e=>e.vaultRoot===f.projectVault.root));
+    const listing=await f.run('recovery_list',{});assert.equal(listing.isError,false,text(listing));assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert.equal(listing.value.recent[0].receiptIndex.state,'readable');
+    const other=await f.runAs({id:'unregistered-other-query'},'recovery_status',{});assert.equal(other.value.projectVault,f.projectVault.root);assert.deepEqual(other.value.recent,[]);
+    assert.deepEqual(await queryFootprint(f),before);const canaryAfter=await fs.stat(path.join(f.projectVault.root,'protection-canary.txt'));assert.equal(canaryAfter.mtimeMs,canaryBefore.mtimeMs);
+  }finally{await f.ctx.fiber.dispose();}
+});
+test('fresh project queries stay empty and read-only even if the global archive has older records',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const legacy=path.join(f.root,'legacy.txt');await fs.writeFile(legacy,'global archive content');await f.vault.snapshot(legacy,{owner:'legacy'});const before=await queryFootprint(f);
+    for(const name of ['recovery_status','recovery_list']){const result=await f.run(name,{});assert.equal(result.isError,false,text(result));assert.equal(result.value.projectVault,null);assert.equal(result.value.projectVaultState,'absent');assert.equal(result.value.recentSource,'project');assert.deepEqual(result.value.recent,[]);}
+    await assert.rejects(fs.stat(f.projectVault.root),{code:'ENOENT'});assert.deepEqual(await fs.readdir(f.workspace),[]);assert.deepEqual(await queryFootprint(f),before);
+    const missing=await f.run('recoverable_delete',{paths:[path.join(f.workspace,'.rd-probe-none.txt')],reason:'nonexistent target fixture'});assert.equal(missing.isError,true,text(missing));assert.match(text(missing),/Deletion target does not exist/);assert.doesNotMatch(text(missing),/partial batch/i);
+  }finally{await f.ctx.fiber.dispose();}
+});
+test('legacy-mode status and list identify the global source explicitly',async()=>{
+  const f=await setup();
+  try{
+    const legacy=path.join(f.root,'legacy.txt');await fs.writeFile(legacy,'global archive content');await f.vault.snapshot(legacy,{owner:'legacy'});
+    const status=await f.run('recovery_status',{}),listing=await f.run('recovery_list',{});assert.equal(status.value.recentSource,'legacy-global');assert.equal(status.value.projectVaultState,'disabled');assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert(status.value.recent.every(e=>e.vaultRoot===f.vault.root));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
 test('real Windows shell: normal work runs, arbitrary workspace script deletion has a prior checkpoint, outside writes fail',async()=>{
   const f=await setup();
   try {

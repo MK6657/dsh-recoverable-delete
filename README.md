@@ -2,7 +2,7 @@
 
 为 DeepSeek Harness 的文件误操作提供可恢复路径，兼顾使用 Purge 的 Windows 开发环境。
 
-**当前开发版本为 0.2.1，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
+**当前开发版本为 0.2.2，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
 
 ## 当前版本能做什么
 
@@ -25,6 +25,8 @@
 详细设计、空间预算和 Python 测试兼容性见 [DESIGN-0.2.0.md](DESIGN-0.2.0.md)。
 
 0.2.1 补充：`recovery_status.boundWorkspace` 明确报告会话绑定的工作区。shell workdir、working_directory 或子任务参数 cwd 不作为改绑授权；以宿主会话和状态返回为准。验收默认在该目录下创建全新专用样本；固定的外部测试目录需要人先在 GUI 添加工作区并新建会话。
+
+0.2.2 修正重启后的状态来源：status/list 共用持久项目登记和任务范围查询，不依赖内存缓存，不静默回落到全局旧记录。查询不创建目录、登记任务、改 ACL 或运行项目 canary。`projectVaultState` 明确区分 ready/absent/unregistered/missing/incomplete/unavailable；每条记录带 vaultRoot，recentSource 标明 project 或 legacy-global。全新项目尚未建立库时，projectVault=null 且 recent=[] 是明确的 absent 状态。
 
 ## 适配和实测环境
 
@@ -90,7 +92,9 @@ node ./bin/recover.mjs reconcile
 
 模型内精确 `list` / `doctor` 由插件代理应答。`recovery_list` 返回当前任务的项目记录；`recoverable_restore` 只接收 ID、原因和可选的检查点相对路径，不接收任意目标。菜单修订 3 保留 PowerShell 5.1 多记录修复并支持项目库；CLI 拒绝多个 ID。免备份测试产物需要重新生成或人工从 Windows 回收站还原。
 
-`recovery_list` 还返回最近恢复的 `restoreDestination`、`audit` 和 `lastRestore`；未恢复时为 null。原 `status` 继续表示删除/备份状态，最近恢复状态在 `lastRestore.status`，不会把“删除时已回收”和“后来恢复成功”混成一个字段。完整收据证明该次恢复曾完成，不证明文件后来没有被修改或清理。损坏的收据会使 `restoreQuery.state=partial`，不伪称审计完整。
+`recovery_list` 和 status.recent 返回最近恢复的 `restoreDestination`、`audit` 和 `lastRestore`；未恢复时为 null。原 `status` 继续表示删除/备份状态，恢复状态在 `lastRestore.status`。完整收据证明那次恢复曾完成，不证明目标后来未变。`receiptIndex.state=readable/partial` 只描述收据索引可读性，绝不表示“已恢复”；旧 restoreQuery 为兼容别名。输出相对路径优先使用 `lastRestore.relativePath`，旧 relative_path 别名保留，恢复工具输入仍兼容原 relative_path 参数。
+
+同一时点，status.recent 是 list.recent 的前 10 条，list 最多返回 50 条。顶层 vaultRoot 仍是全局控制/旧归档库，当前记录来源看 recentSource、projectVault 和每条记录的 vaultRoot。bytes 是逻辑数据量，不表示这条记录新增多少磁盘占用。
 
 ## 测试、证据与安全边界
 
@@ -101,6 +105,8 @@ node --test test/recovery.test.mjs test/harness.test.mjs
 ```
 
 套件会创建专用样本，实际执行回收站、同盘隔离、恢复、ACL 沙箱与宿主工具管线测试；完整集成测试还需要本机 Purge。不是纯 mock，也不适合直接在普通 GitHub runner 上宣称“全套通过”。测试不会自动清空历史样本或回收站。详见 [VALIDATION.md](VALIDATION.md) 和 [USER-ACCEPTANCE.md](USER-ACCEPTANCE.md)。
+
+完整套件应由人在 DSH agent 外的独立进程运行；不要为了让模型沙箱执行宿主集成测试而放开权限。只调用 status/list 是字段核对，不等于完整恢复功能回归。
 
 0.1.3 冻结版曾通过 Node 22/24 各 45 项测试和用户手动恢复验收。0.2.0 新增验证单独记录于 VALIDATION.md，不把旧证据当作新功能验证。原始账号快照、会话、审计、恢复记录和个人路径证据不公开。
 

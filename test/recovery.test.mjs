@@ -319,7 +319,7 @@ test('project deletion budgets remain profile-wide across workspaces',async()=>{
 test('partial batch failure retains discoverable authorization for already removed project files',async()=>{
   const f=await projectFixture();const first=await put(path.join(f.workspace,'first.txt'),'first original');const second=await put(path.join(f.workspace,'second.txt'),'second original');const rename=fs.rename;
   fs.rename=async(from,to)=>{if(from===second)throw Object.assign(new Error('simulated second move failure'),{code:'EPERM'});return rename(from,to);};
-  try{await assert.rejects(f.manager.remove(f.project,[first,second],{owner:'scope',reason:'batch failure fixture',destination:'quarantine'}),/second move failure/);}finally{fs.rename=rename;}
+  try{await assert.rejects(f.manager.remove(f.project,[first,second],{owner:'scope',reason:'batch failure fixture',destination:'quarantine'}),error=>/second move failure/.test(error.message)&&/Recovery IDs:/.test(error.message)&&/Check recovery_list/.test(error.message));}finally{fs.rename=rename;}
   await assert.rejects(fs.stat(first),{code:'ENOENT'});assert.equal(await fs.readFile(second,'utf8'),'second original');
   const records=await f.manager.list(f.project,'scope');const prior=records.find(e=>e.original===first);assert(prior);
   const restored=await f.manager.restore(f.project,'scope',{id:prior.id,reason:'recover already moved item after a partial batch failure'});assert.equal(restored.status,'restored');assert.equal(await fs.readFile(first,'utf8'),'first original');
@@ -333,9 +333,9 @@ test('host session scopes persist and cannot be reassigned by changed ancestry o
 
 test('recovery list separates deletion status from the latest durable restore destination and audit',async()=>{
   const f=await projectFixture();const source=await put(path.join(f.workspace,'summary.txt'),'original summary bytes');const [deleted]=await f.manager.remove(f.project,[source],{owner:'scope',reason:'summary fixture',destination:'quarantine'});
-  let listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.lastRestore,null);assert.equal(listed.restoreDestination,null);assert.equal(listed.audit,null);
+  let listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.lastRestore,null);assert.equal(listed.restoreDestination,null);assert.equal(listed.audit,null);assert.equal(listed.receiptIndex.state,'readable');
   const restored=await f.manager.restore(f.project,'scope',{id:deleted.id,reason:'recover needed source'});
-  listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.status,'quarantined');assert.equal(listed.lastRestore.status,'restored');assert.equal(listed.restoreDestination,source);assert.equal(listed.audit.state,'complete');assert.equal(listed.audit.transactionId,restored.audit.transactionId);
+  listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.status,'quarantined');assert.equal(listed.lastRestore.status,'restored');assert.equal(listed.lastRestore.relativePath,null);assert.equal(listed.lastRestore.relative_path,null);assert.equal(listed.restoreDestination,source);assert.equal(listed.audit.state,'complete');assert.equal(listed.audit.transactionId,restored.audit.transactionId);
   const conflicted=await f.manager.restore(f.project,'scope',{id:deleted.id,reason:'compare old source with existing content'});
   const auditBefore=await fs.readFile(path.join(f.project.root,'audit.jsonl'),'utf8');listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.restoreDestination,conflicted.destination);assert.equal(listed.audit.transactionId,conflicted.audit.transactionId);assert.equal(listed.restoreQuery.state,'complete');assert.equal(await fs.readFile(path.join(f.project.root,'audit.jsonl'),'utf8'),auditBefore);
   assert.deepEqual(await f.manager.list(f.project,'other-task'),[]);
@@ -355,6 +355,20 @@ test('restore publication never overwrites a file created after the preflight ch
   fs.link=async(from,to)=>{if(to===destination)await fs.writeFile(destination,'new concurrent work',{flag:'wx'});return originalLink(from,to);};
   try{await assert.rejects(f.vault.restore(snapshot.id,{destination}),{code:'EEXIST'});}finally{fs.link=originalLink;}
   assert.equal(await fs.readFile(destination,'utf8'),'new concurrent work');
+});
+
+test('read-only project lookup never initializes absent, unregistered or incomplete stores',async()=>{
+  const f=await fixture();const manager=new ProjectRecovery(f.config,f.vault,{prepare:async()=>{throw new Error('Query must not prepare ACLs');},protect:async()=>{throw new Error('Query must not protect directories');}});
+  const exec={agent:{session:{header:{id:'scope',cwd:f.workspace}}}};
+  let query=await manager.query(exec,f.workspace);assert.equal(query.projectVaultState,'absent');assert.deepEqual(query.recent,[]);await assert.rejects(fs.stat(f.vault.root),{code:'ENOENT'});
+  const root=path.join(f.workspace,'.dsh-recovery');await fs.mkdir(root);await put(path.join(root,'unregistered.txt'),'preserve unregistered data');query=await manager.query(exec,f.workspace);assert.equal(query.projectVaultState,'unregistered');assert.equal(await fs.readFile(path.join(root,'unregistered.txt'),'utf8'),'preserve unregistered data');await assert.rejects(fs.stat(f.vault.root),{code:'ENOENT'});
+  const other=await projectFixture();const otherExec={agent:{session:{header:{id:'scope',cwd:other.workspace}}}};const entries=path.join(other.project.root,'entries');await fs.rename(entries,entries+'-retained');const restarted=new ProjectRecovery(other.config,new Vault(other.config));query=await restarted.query(otherExec,other.workspace);assert.equal(query.projectVaultState,'incomplete');assert.deepEqual(query.recent,[]);await assert.rejects(fs.stat(entries),{code:'ENOENT'});await fs.stat(entries+'-retained');
+});
+
+test('checkpoint restore summaries expose camelCase relativePath while retaining compatibility aliases',async()=>{
+  const f=await projectFixture();const relative=path.join('src','sample.txt');const file=await put(path.join(f.workspace,relative),'subset original');const checkpoint=await f.manager.snapshot(f.project,f.workspace,{owner:'scope',reason:'subset summary',kind:'workspace-checkpoint'});await fs.unlink(file);
+  await f.manager.restore(f.project,'scope',{id:checkpoint.id,relative_path:relative,reason:'restore specific subset'});
+  const entry=(await f.manager.list(f.project,'scope')).find(e=>e.id===checkpoint.id);assert.equal(entry.lastRestore.relativePath,relative);assert.equal(entry.lastRestore.relative_path,relative);assert.equal(entry.receiptIndex.state,'readable');assert.equal(entry.audit.state,'complete');
 });
 test('human menu discovers legacy and project records and restores a selected project ID',{skip:process.platform!=='win32'},async()=>{
   for(const engine of ['powershell.exe','pwsh.exe']){

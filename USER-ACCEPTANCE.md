@@ -1,8 +1,17 @@
-# 0.2.1 专用样本验收
+# 0.2.2 专用样本验收
 
-## 现有会话可直接执行的方案
+## 升级后的只读核对
 
-先调用 recovery_status，确认 version=0.2.1、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
+已通过的核心删除/恢复动作无需为字段修复反复重做。可先只调用 recovery_status，然后 recovery_list：
+
+- 已登记且有效的项目库在重启后即应显示 projectVaultState=ready、实际 projectVault 和 recentSource=project；状态前 10 条应与列表前缀一致，记录带 vaultRoot。
+- 真正尚无项目库时应为 absent、projectVault=null、recent=[]；不出现全局旧记录，也不因查询创建目录或任务登记。
+- receiptIndex.state=readable 仅说明索引可读。恢复结果看 lastRestore.status 与 audit.state；未恢复为 null，输出相对路径优先 relativePath。restoreQuery/relative_path 是保留的兼容别名。
+- 若库缺失/未登记/不完整/不可读，按 projectVaultState 诊断，不靠改 cwd 或关闭保护“修复”。
+
+## 需要功能验收时：现有会话专用样本
+
+先调用 recovery_status，确认 version=0.2.2、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
 可直接发给 DSH：
 
@@ -26,7 +35,7 @@
 - status 是原删除/备份事件状态，例如 recycled；最近恢复在 lastRestore 中。
 - restoreDestination 是最近持久收据中的目标；audit.state=complete 说明那次恢复的审计已完成，不保证目标后来没有被再次修改或清理。
 - restored-audit-pending 表示文件已恢复但审计待补记，交由人工菜单选 5 核验，不重复恢复。
-- incomplete 表示事务没有完整成功收据；restoreQuery.state=partial 表示部分收据无法读取，不得推断“全部审计完成”。
+- incomplete 表示事务没有完整成功收据；receiptIndex.state=partial（旧别名 restoreQuery.state=partial）表示部分收据无法读取，不得推断“全部审计完成”。
 
 ## 人工恢复与旧版兼容
 

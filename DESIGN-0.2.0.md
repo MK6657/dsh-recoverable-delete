@@ -36,6 +36,10 @@
 
 0.2.1：recovery_status.boundWorkspace 用于调用前确认会话边界；工具级 cwd 和工作目录切换不重新授权。recovery_list 以持久恢复收据提供 lastRestore、restoreDestination、audit，不修改原删除状态。null 表示未查询到恢复收据；prepared 对应 incomplete，审计待补记对应 pending，完成收据对应 complete。遇损坏或无法解释的收据明确标记查询 partial；这些都是历史事件摘要，不认证当前目标仍与备份相同。
 
+0.2.2：status/list 共用只读持久项目查询，进程刚重启也能发现已登记项目。不调用 open、ACL 准备或 canary，不创建项目或任务登记。项目不存在/未登记/目录缺失/不完整/不可读时明确标记 projectVaultState，保持 project 来源，不伪装成全局旧记录。只有关闭 projectRecovery 的旧模式显示 legacy-global。状态前 10 条与列表前缀一致，每条带 vaultRoot。
+
+输出相对路径使用 relativePath，保留 relative_path 别名；输入参数暂不改名。receiptIndex 的 readable/partial 表示索引可读性，不是恢复结果；旧 restoreQuery 保留为兼容别名。目标不存在等前置错误没有批次提示，确有已移走且有备份的目标时才附恢复 ID。
+
 宿主提供的会话 ID 是任务根；已登记的同工作区父子会话共享任务域，跨插件重启延续。未见过父任务的子会话保守地自成任务域，不凭模型声明合并。会话工作区或父关系改变时拒绝自动恢复。
 
 执行前核对受保护索引中的项目、任务和清单摘要，验证内容对象。只恢复本任务原工作区的普通数据，不恢复链接或受保护应用数据。工作区检查点必须选择具体相对路径，不能自动全项目回滚。

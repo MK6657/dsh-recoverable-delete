@@ -1,5 +1,12 @@
 # 变更记录
 
+## 0.2.2 — 2026-11-16
+
+- 修复重启后 status 仅查内存导致 projectVault=null、recent 静默换为全局旧记录的问题；status/list 共享持久登记查询和相同任务范围，所有记录带来源路径。
+- 查询不创建项目/任务登记、不修改 ACL、不跑项目 canary；缺失或损坏项目库明确标记，不回落全局或自动补目录。
+- 新增 receiptIndex(readable/partial) 和输出 relativePath，保留旧字段别名兼容；删除/恢复状态保持分开。
+- 普通前置失败不再附加部分批次失败提示；确有已移走目标时才提供其恢复 ID 和查询指引。
+
 ## 0.2.1 — 2026-11-16
 
 - 状态报告 boundWorkspace，验收默认在当前绑定工作区创建唯一专用样本；外部固定测试目录明确要求 GUI 新建会话，不能靠 workdir、working_directory 或子任务 cwd 改绑。
