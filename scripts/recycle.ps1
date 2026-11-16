@@ -4,7 +4,7 @@ $ErrorActionPreference='Stop'
 $request=[Console]::In.ReadToEnd() | ConvertFrom-Json
 $target=[System.IO.Path]::GetFullPath([string]$request.path)
 $manifestPath=[System.IO.Path]::GetFullPath([string]$request.manifest)
-if($manifestPath -notmatch '[\\/]dsh-recovery-vault[\\/]entries[\\/][a-zA-Z0-9-]+[\\/]manifest\.json$') { throw 'A completed recovery manifest is required.' }
+if($manifestPath -notmatch '[\\/](?:dsh-recovery-vault|\.dsh-recovery)[\\/]entries[\\/][a-zA-Z0-9-]+[\\/]manifest\.json$') { throw 'A completed recovery manifest is required.' }
 $manifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 if($manifest.status -ne 'recycle-pending' -or [System.IO.Path]::GetFullPath([string]$manifest.original) -ne $target) { throw 'The recovery transaction does not authorize this exact target.' }
 Add-Type -AssemblyName Microsoft.VisualBasic

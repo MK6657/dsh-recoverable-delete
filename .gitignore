@@ -25,6 +25,9 @@ ACCEPTANCE.md
 !.env.example
 dsh-recovery-vault/
 .dsh-recovery/
+.dsh-test-tmp/
+.dsh-recovered/
+local-acceptance*
 objects/
 entries/
 state/

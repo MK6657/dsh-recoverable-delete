@@ -2,22 +2,53 @@
 
 为 DeepSeek Harness 的文件误操作提供可恢复路径，兼顾使用 Purge 的 Windows 开发环境。
 
-**这是已在一台 Windows 机器验收的 0.1.3 源码基线，包含“菜单修订 2”。它仍是固定版本、固定目录布局的本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。**
+**当前开发版本为 0.2.7，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
 
 ## 当前版本能做什么
 
 | 操作 | 处理方式 |
 | --- | --- |
-| `recoverable_delete` 或可解析的精确 `rm` / `Remove-Item` | 校验独立备份后优先送 Windows 回收站；回收站失败则使用同盘隔离区 |
+| `recoverable_delete` 或可解析的精确 `rm` / `Remove-Item` | 项目 `.dsh-recovery` 内仅备份目标，校验后优先回收站，失败则同盘隔离 |
 | `write` / `edit` / `apply_patch` 等已有文件修改 | 修改前保存原件；补丁删除也可从备份恢复 |
-| 其他需要执行的修改类 shell 命令 | 执行前保存工作区检查点，内容按哈希去重；检查点失败则不执行 |
+| 可精确解析的单条 PowerShell 内容/属性写入 | 仅备份目标原件 |
+| 无法确定目标的修改类脚本 | 仍保留去重工作区检查点，排除恢复库及登记的可丢弃临时目录；失败不执行 |
 | 账号、会话、凭据、恢复库、插件源码等受保护路径 | 拒绝相应的删除/修改，检查父目录和路径链接 |
 | 人工恢复 | 从独立恢复菜单选择单条记录，校验内容后恢复；已有目标不覆盖 |
+| `recoverable_restore` | 本任务限定自动恢复；冲突另存，检查点须给具体相对路径，目录选择另须 recursive:true |
+| `recovery_create_temp` | 插件新建空的测试临时目录，其精确删除只走回收站，不保存内容副本 |
 | 审计故障 | 写目标前预检；恢复已完成但最终审计失败时明确返回待补记状态 |
 
-备份对象、路径对应清单、操作审计和恢复事务分开存储；不自动清空回收站、隔离区或历史备份。重复内容只存一个对象，但工作区检查点仍可能扫描完整项目。
+备份对象、原路径/原因/任务归属清单、审计与恢复事务分开存储；不自动清空回收站、隔离区或历史备份。重复内容只存一个对象；复杂脚本的工作区兜底仍可能产生首次全项目备份，不能描述成“所有 shell 都精准备份”。
 
-**当前不允许模型自行恢复。** `restore` / `reconcile` 等修改型恢复命令在 DSH agent 环境中会提前拒绝。恢复由人在 DSH 外启动菜单完成。
+自动恢复通过专用工具执行，不放开恢复 CLI 或整个恢复库的写权限。宿主会话 ID 及已登记父子关系确定任务归属，跨重启保持。原位置有内容或某级父路径已变成文件时恢复到 `.dsh-recovered` 副本目录，不自动覆盖；同一记录/选择 30 分钟内最多自动恢复 3 次（失败也计数）；重复尝试会返回 previousAttempts 和提醒。账号/应用会话、其他任务、链接、任意外部目标不开放自动恢复。直接在 agent 内运行 CLI `restore/reconcile` 仍拒绝。
+
+详细设计、空间预算和 Python 测试兼容性见 [DESIGN-0.2.0.md](DESIGN-0.2.0.md)。
+
+0.2.1 补充：`recovery_status.boundWorkspace` 明确报告会话绑定的工作区。shell workdir、working_directory 或子任务参数 cwd 不作为改绑授权；以宿主会话和状态返回为准。验收默认在该目录下创建全新专用样本；固定的外部测试目录需要人先在 GUI 添加工作区并新建会话。
+
+0.2.2 修正重启后的状态来源：status/list 共用持久项目登记和任务范围查询，不依赖内存缓存，不静默回落到全局旧记录。查询不创建目录、登记任务、改 ACL 或运行项目 canary。`projectVaultState` 明确区分 ready/absent/unregistered/missing/incomplete/unavailable；每条记录带 vaultRoot，recentSource 标明 project 或 legacy-global。全新项目尚未建立库时，projectVault=null 且 recent=[] 是明确的 absent 状态。
+
+0.2.4 收紧只读免备份条件：仅接受已知读取命令组成的字面量管道，括号、内嵌命令、变量展开、脚本块和方法调用不继承外层命令的只读身份。固定的 `(字面量读取管道).Count` 单独验证后允许；未知表达式先做检查点，明确的内嵌删除仍拒绝。带输出文件或执行 helper 选项的 Git/rg 也不免检查点。这是受监督命令的保守判定，不能代替对任意脚本逐文件拦截。
+
+0.2.4 的恢复事务新增 phase、stagingPath、targetPublished、error/errorCode。正常捕获的发布前失败记为 failed，保留暂存数据和原备份；发布后元数据未完成记为 published-incomplete，不假称未写入。崩溃遗留 prepared 与发布中未知状态仍需人工核验。reconcile 不会把失败事务之后另行创建的同内容文件认证成该次恢复；已发布但未完成的事务需内容及属性核对通过。旧 prepared 收据保留，不自动改写历史。
+
+0.2.5 补充：仅在 Format-Table / Format-List / Select-Object 的开头属性位置允许简单的 `Name,Length` 或 `-Property Name, Length` 列表，仍拒绝将一般逗号数组、计算属性或内嵌表达式视为只读。读取恢复库和普通项目均不会因此产生无谓检查点。未知恢复 ID 返回 RECOVERY_RECORD_NOT_FOUND；缺失、损坏或不可读元数据返回 RECOVERY_RECORD_UNAVAILABLE，不向模型输出内部控制库路径，也不伪称备份一定存在；这些前置失败不消耗恢复次数、不创建恢复事务。权限和任务范围规则不变。
+
+检查点保存的是对应命令执行前的文件内容，不包含该时刻之后新建的文件。选择不存在的相对路径会明确解释这个时间边界。拒绝消息保留具体原因和对应工具指引，移除通用 Operation stopped 及与当前拒绝无关的原生补丁说明；简单目标不存在与复杂删除被拒绝仍有不同原因，删除与恢复也使用不同的后续指引。
+
+0.2.6 为恢复错误的说明文字和 JSON 详情加上显式空行，即使界面直接拼接文本块也保持分段；error meta 中的结构化字段不变。
+
+只读免检查点要求单条受支持的字面量管道。不要在命令后追加未引用的 `; echo ...`、换行收尾语句等多语句内容；字面量引号里的分号不等于命令分隔符。`Out-Null` 当前也不在只读白名单内，即使没有分号，管道末尾加它仍不获得只读豁免。读取恢复库时这类无法证明只读的形式会被拒绝；普通项目中可能先做检查点再执行。需要查看结果时直接使用已支持的 `Format-Table` / `Format-List` / `Select-Object`，不追加收尾语句；输出较长时优先用 `Select-Object -First N` 限制条数。
+
+`lastCheckpoint` 是当前插件进程最近一次受监督 shell 备份步骤得到的记录 ID，可能是目标快照或工作区检查点；它不汇总原生 write/edit 等工具的全部备份，也不是历史检查点列表。启动时、或该备份目标原本不存在时可为 null，原历史仍在。判断某条命令是否新增备份，应在没有并发任务时对比前后 recovery_list 的 ID、kind、at 和 reason，结合该条工具调用结果；lastCheckpoint 不变或列表返回 50 条都不能单独证明没有新增记录。最近列表有窗口及任务范围限制，reason 也只是描述，不能单独证明执行结果。
+
+检查点在命令执行前保存；命令报错或非零退出后仍保留。失败命令可能已经修改部分文件，不能仅凭退出码把备份标成 unused 或自动清理。需要时按记录和相对路径恢复旧字节，保留当前成果及冲突副本。
+
+0.2.7 明确目录选择：检查点 `relative_path` 指向目录时会包含该目录及全部子项，必须显式传 `recursive:true`；未传时返回 RECOVERY_RECURSIVE_REQUIRED 和子树文件数/目录数/字节数，在写副本与计入次数前停止。只需单文件时给文件相对路径。普通“删除整个目录”的独立记录继续整体恢复，不另要求此标记。成功返回的 restoreSelection 描述实际选择，files 为普通文件数、directories 为目录数、bytes 为逻辑字节；旧删除记录的 files 字段仍按文件系统条目总数计数。整工作区自动回滚仍拒绝。
+
+新备份/删除清单和查询增加 reasonProvided：true 表示显式提供了非空白 reason，false 表示没有；description 或默认文案不算显式 reason，原 reason 文本保留。旧清单显示 null，表示历史来源未知，不推测、不改写旧审计。两个记录即使 reason 文本相同，也可区分是否明确提供。建议始终给删除原因。
+
+字面量查询新增 Sort-Object、Group-Object、Get-Unique（包括 Sort/Group 的简单属性列表），继续排除脚本块、计算属性、变量展开和分号附加语句。简式过滤 `Where-Object Name -eq 'objects'` 已支持；`Where-Object { ... }` 不是只读豁免形式。Out-Null 仍不在该白名单。不存在“所有过滤都不可用”的限制。
 
 ## 适配和实测环境
 
@@ -47,13 +78,14 @@
 | --- | --- |
 | `D:/DeepSeek_dsh_win/resources/app/dsh` | 宿主模块；`lib/index.js`、vendor 生成器、集成测试 |
 | `D:/DeepSeek_dsh_win/resources/runtime/primary-runtime/dependencies/node/bin/node.exe` | 恢复菜单使用的 Node |
-| `D:/dsh-recovery-vault` | 恢复库；bundle、CLI 配置及辅助脚本 |
+| `D:/dsh-recovery-vault` | 旧版/重要应用备份与受保护的小型项目和任务索引；旧数据保留 |
+| 项目 `.dsh-recovery` | 新项目的去重内容、清单、审计、隔离和恢复事务 |
 | `D:/dsh-recovery-tests` | 专用测试样本、启动探针 |
 | `D:/dsh-restoration-acceptance` | 原路径已有内容时的恢复副本目录 |
 | `D:/ProjectRuntimes/python311/Scripts/python.exe` | 重要应用备份菜单项的默认 Python |
 | 当前用户的 `.dsh/profiles/desktop` | 本地安装助手及 Purge 集成测试使用的 profile |
 
-`recovery.config.json` 供 CLI 使用；`cordis.patch.yml` 供插件 bundle 使用。不是所有路径都能通过单一配置文件覆盖。特别是 `scripts/recycle.ps1` 要求恢复库路径包含 `dsh-recovery-vault/entries`，不要随意改名后假设回收站路径仍工作。
+`recovery.config.json` 供 CLI 使用；`cordis.patch.yml` 供插件 bundle 使用。不是所有路径都能通过单一配置文件覆盖。回收脚本仅接受 `dsh-recovery-vault/entries` 或 `.dsh-recovery/entries` 中的明确删除事务。
 
 安装步骤和迁移核对表见 [INSTALL.md](INSTALL.md)。先备份 profile；宿主退出后再修改安装。**不要在正在使用的 profile 中直接运行安装脚本试错。** 该助手只适用于已存在、结构匹配的 desktop profile，不会安装宿主、Purge 或其他缺失依赖。
 
@@ -65,7 +97,7 @@
 
 在 Windows 资源管理器中双击仓库根目录的 **DSH-Recovery.cmd**，或自行创建指向它的桌面入口。不要让 DSH agent 或其集成终端代启动恢复菜单。
 
-1. 选 `2`，按每条记录的完整原路径和记录 ID 找到目标。
+1. 菜单应显示“菜单修订 3”。选 `2`，按完整原路径和记录 ID 找到目标；列表汇总旧库与已登记项目。
 2. 输入 `[No]` 对应数字；恢复路径直接回车使用显示的默认位置。
 3. 原位置已有内容时，菜单默认选择独立恢复目录；底层拒绝覆盖。
 4. 成功结果为 `status: restored`、`audit.state: complete`。
@@ -80,7 +112,22 @@ node ./bin/recover.mjs restore RECORD_ID --to 'D:/recovered-copy'
 node ./bin/recover.mjs reconcile
 ```
 
-模型内的精确 `list` / `doctor` 命令由插件只读代理应答，不能据此推断模型获得了 CLI 恢复权限。菜单修订 2 修复了 PowerShell 5.1 合并 JSON 数组的问题，并显示每条独立记录；CLI 拒绝一次传入多个记录 ID。
+模型内精确 `list` / `doctor` 由插件代理应答。`recovery_list` 返回当前任务的项目记录；`recoverable_restore` 只接收 ID、原因和可选的检查点相对路径，不接收任意目标。菜单修订 3 保留 PowerShell 5.1 多记录修复并支持项目库；CLI 拒绝多个 ID。免备份测试产物需要重新生成或人工从 Windows 回收站还原。
+
+自动恢复的落点规则如下，均保留备份与已有内容：
+
+| 选择与当前路径 | 自动恢复落点 | 关键返回 |
+| --- | --- | --- |
+| 目标不存在且父路径可用 | 原路径 | conflictCopy=false，conflictReason=null |
+| 目标被文件或目录占用 | 项目 `.dsh-recovered/<记录ID>/<原名>-<随机后缀>` | conflictCopy=true，conflictReason=target-exists |
+| 某级父路径已变成普通文件 | 同上，另存项目内副本 | conflictCopy=true，conflictReason=ancestor-not-directory |
+| 检查点选中目录但没有 recursive:true | 先停止，不写恢复目标 | RECOVERY_RECURSIVE_REQUIRED，返回子树规模 |
+
+副本后缀是随机标识，不是内容哈希；最终实际路径看 destination/restoreDestination。目录恢复包含其全部子项，不是只恢复一个空目录。
+
+`recovery_list` 和 status.recent 返回最近恢复的 `restoreDestination`、`audit` 和 `lastRestore`；未恢复时为 null。原 `status` 继续表示删除/备份状态，最近一次恢复尝试状态在 `lastRestore.status`，可能为 restored、restored-audit-pending、failed 或 incomplete。`targetPublished=false` 表示该次尝试没有发布最终目标，暂存副本仍可能存在；null 表示旧收据或中断事务无法确定，不能解释成“没写入”。完整收据证明那次恢复曾完成，不证明目标后来未变。`receiptIndex.state=readable/partial` 只描述收据索引可读性，绝不表示“已恢复”；旧 restoreQuery 为兼容别名。输出相对路径优先使用 `lastRestore.relativePath`，旧 relative_path 别名保留，恢复工具输入仍兼容原 relative_path 参数。
+
+同一时点，status.recent 是 list.recent 的前 10 条，list 最多返回 50 条。0.2.3 新增 recentLimit（该入口的上限）与 recentCount（本次实际返回条数），两者均不是历史总条数；数量不同不代表记录丢失。该语义和 receiptIndex 的优先级同时写入工具说明及模型提示。拒绝消息中的 recoverable_delete 指引只出现一次。顶层 vaultRoot 仍是全局控制/旧归档库，当前记录来源看 recentSource、projectVault 和每条记录的 vaultRoot。bytes 是逻辑数据量，不表示这条记录新增多少磁盘占用。
 
 ## 测试、证据与安全边界
 
@@ -92,23 +139,23 @@ node --test test/recovery.test.mjs test/harness.test.mjs
 
 套件会创建专用样本，实际执行回收站、同盘隔离、恢复、ACL 沙箱与宿主工具管线测试；完整集成测试还需要本机 Purge。不是纯 mock，也不适合直接在普通 GitHub runner 上宣称“全套通过”。测试不会自动清空历史样本或回收站。详见 [VALIDATION.md](VALIDATION.md) 和 [USER-ACCEPTANCE.md](USER-ACCEPTANCE.md)。
 
-本地原版已通过 Node 22/24 各 45 项测试，以及用户桌面菜单的文件/目录手动恢复和哈希、审计核对。发布副本另行验证，结果单独记录；原始账号快照、会话、审计、恢复记录和机器路径证据不公开。
+完整套件应由人在 DSH agent 外的独立进程运行；不要为了让模型沙箱执行宿主集成测试而放开权限。只调用 status/list 是字段核对，不等于完整恢复功能回归。
+
+0.1.3 冻结版曾通过 Node 22/24 各 45 项测试和用户手动恢复验收。0.2.0 新增验证单独记录于 VALIDATION.md，不把旧证据当作新功能验证。原始账号快照、会话、审计、恢复记录和个人路径证据不公开。
 
 这不是文件系统内核驱动。Windows 官方 ACL enforcement 为 `partial`；其他宿主插件绕开工具直接写文件、外部程序、鼠标操作或恶意破坏插件不能由本项目完整接管。执行前快照也不包含脚本执行期间刚创建又删除的文件。不同命令的恢复路径不同，**不是所有删除都被重定向到回收站**。
 
-默认单次检查点上限为 100,000 个对象 / 5 GiB；删除另有会话和 profile 累计预算。备份失败、变化中源文件、损坏对象、危险路径等场景会停止相应操作，不能降级为永久删除。同一磁盘上的恢复副本不等于独立介质备份。
+默认单次检查点上限为 100,000 个对象 / 5 GiB；项目内容对象另有默认 2 GiB 存储预算，新增副本后至少保留 64 MiB 空间。隔离原件、清单和审计不计入这项对象预算，实际目录可能更大。删除累计预算仍在受保护的全局索引中跨项目计算。预算不足会停止相应操作，不自动删旧备份；同盘副本不能覆盖磁盘损坏。
 
 菜单的“备份重要应用数据”会读取本机 Codex、DSH、CockpitTools、Magpie 等目录，SQLite 使用备份 API。它不自动运行、没有计划任务；输出可能含账号和凭据，必须只保留在受限本地存储，不要提交或上传。恢复数据库先另存核对，再关闭对应应用后按其方式导入。
 
 ## 冻结基线与后续计划
 
-`v0.1.3` 记录当前已验收版本（菜单修订 2）。运行核心、严格恢复 CLI、恢复菜单及第三方沙箱与已安装基线逐字节比对；[SOURCE-BASELINE.json](SOURCE-BASELINE.json) 提供哈希和发布整理差异。
+`v0.1.3` 保留原已验收基线（菜单修订 2）。[SOURCE-BASELINE.json](SOURCE-BASELINE.json) 的哈希仅描述该历史标签，不能用来认定 0.2.0 修改后的文件仍与旧版相同。新版本在独立开发分支验证，标签不移动。
 
-以下仅为后续讨论，**本版本尚未实现**：
+0.2.0 已实现有限自动恢复、项目本地存储和可信临时目录回收。仍未实现：
 
-- 本任务限定的 agent 自主恢复与冲突处理。
-- 项目内恢复目录和精准增量备份，减少修改类 shell 的完整工作区检查点。
-- 可信专用测试产物免备份、直接走回收站。
+- 任意复杂脚本的逐文件写入前拦截；当前保留工作区检查点兜底。
 - 用户逐目标授权的备份退役流程。
 
 ## 许可证

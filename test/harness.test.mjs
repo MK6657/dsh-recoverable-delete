@@ -13,10 +13,10 @@ const module=async name=>import(pathToFileURL(path.join(host,'node_modules/@deep
 const {Context}=await module('cordis');
 const [Prompt,Tools,Native,Subprocess,Sandbox,Shell,ShellEnv,Fs,FsTools,ShellTools]=await Promise.all(['dsh-system-prompt','dsh-tools','dsh-tool-executor-native','dsh-subprocess-local','dsh-sandbox-local','dsh-pwsh-sandbox','dsh-shell-env','dsh-fs-local','dsh-tool-fs','dsh-tool-pwsh'].map(module));
 await fs.mkdir('D:/dsh-recovery-tests',{recursive:true});
-async function setup({purge=false}={}) {
-  const root=await fs.mkdtemp('D:/dsh-recovery-tests/harness-');
-  const workspace=path.join(root,'workspace-项目'); await fs.mkdir(workspace);
-  const config={hostRoot:host,vaultRoot:path.join(root,'dsh-recovery-vault'),checkpointWorkspace:true,confineShell:true};
+async function setup({purge=false,projectRecovery=false,existing}={}) {
+  const root=existing?.root??await fs.mkdtemp('D:/dsh-recovery-tests/harness-');
+  const workspace=existing?.workspace??path.join(root,'workspace-项目'); await fs.mkdir(workspace,{recursive:true});
+  const config={hostRoot:host,vaultRoot:path.join(root,'dsh-recovery-vault'),checkpointWorkspace:true,confineShell:true,projectRecovery};
   const ctx=new Context();
   ctx.reflect.provide('workingDirectory',{ensure:async(agent)=>agent.session.header.cwd});
   ctx.reflect.provide('sandboxPolicy',{defaultMode:'danger-full-access',resolve:session=>({mode:'danger-full-access',workspaceRoot:session?.header?.cwd??workspace})});
@@ -45,7 +45,10 @@ async function setup({purge=false}={}) {
     const batch=await ctx.tools.execute({agent,calls:[{id:`acceptance-${++counter}`,name,arguments:JSON.stringify(args)}],signal:new AbortController().signal});
     return batch.results[0].result;
   };
-  return {root,workspace,ctx,config,run,vault:new Vault(config)};
+  const runAs=async(header,name,args)=>{
+    const batch=await ctx.tools.execute({agent:{...agent,session:{...agent.session,header:{cwd:workspace,...header}}},calls:[{id:`acceptance-${++counter}`,name,arguments:JSON.stringify(args)}],signal:new AbortController().signal});return batch.results[0].result;
+  };
+  return {root,workspace,ctx,config,run,runAs,vault:new Vault(config),projectVault:new Vault({...config,vaultRoot:path.join(workspace,'.dsh-recovery')})};
 }
 function text(r){return r.content.filter(c=>c.type==='text').map(c=>c.text).join('\n');}
 test('real patched Harness: file writes, edits, patches and removal are recoverable',async()=>{
@@ -65,6 +68,164 @@ test('real patched Harness: file writes, edits, patches and removal are recovera
     const prePatch=(await f.vault.list()).find(e=>e.kind==='pre-mutation'&&e.original===file); await f.vault.restore(prePatch.id); assert.equal(await fs.readFile(file,'utf8'),'new\n');
   } finally { await f.ctx.fiber.dispose(); }
 });
+
+test('project tools: selective local backup and scoped automatic restore survive a host restart',async()=>{
+  let f=await setup({projectRecovery:true});const original=f;
+  try{
+    const source=path.join(f.workspace,'keep-code.txt'),unrelated=path.join(f.workspace,'large-unrelated.bin');await fs.writeFile(source,'recover original code');await fs.writeFile(unrelated,Buffer.alloc(256*1024,77));
+    const removed=await f.run('recoverable_delete',{paths:[source],reason:'remove obsolete fixture'});assert.equal(removed.isError,false,text(removed));
+    const id=removed.value.entries[0].id;const manifest=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',id,'manifest.json'),'utf8'));
+    const brokered=await f.run('pwsh',{command:`node '${path.join(SOURCE_ROOT,'bin/recover.mjs')}' list`,description:'scoped recovery list through read-only broker'});assert.equal(brokered.isError,false,text(brokered));assert(JSON.parse(brokered.value.stdout.text).some(e=>e.id===id));
+    assert.equal(manifest.reason,'remove obsolete fixture');assert.equal(manifest.original,source);assert.equal(manifest.entries.length,1);assert.equal((await fs.readdir(path.join(f.projectVault.root,'objects'))).length,1);
+    const outsider=await f.runAs({id:'another-task'},'recoverable_restore',{id,reason:'cross-task attempt'});assert.equal(outsider.isError,true,text(outsider));await assert.rejects(fs.stat(source),{code:'ENOENT'});
+    await f.ctx.fiber.dispose();f=await setup({projectRecovery:true,existing:original});
+    const restored=await f.run('recoverable_restore',{id,reason:'deleted needed code by mistake'});assert.equal(restored.isError,false,text(restored));assert.equal(restored.value.status,'restored');assert.equal(restored.value.audit.state,'complete');assert.equal(await fs.readFile(source,'utf8'),'recover original code');assert.equal((await fs.stat(unrelated)).size,256*1024);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tools: conflicts preserve new content, trusted children share scope, repeated restores stop',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'conflict.txt');await fs.writeFile(source,'old contents');
+    const removed=await f.run('recoverable_delete',{paths:[source],reason:'fixture deletion'});assert.equal(removed.isError,false,text(removed));const id=removed.value.entries[0].id;await fs.writeFile(source,'new work must survive');
+    const child=await f.runAs({id:'trusted-child',parentSession:'acceptance-session'},'recoverable_restore',{id,reason:'need the old version for comparison'});assert.equal(child.isError,false,text(child));assert.equal(child.value.conflictCopy,true);assert.equal(await fs.readFile(source,'utf8'),'new work must survive');assert.equal(await fs.readFile(child.value.destination,'utf8'),'old contents');
+    for(let i=0;i<2;i++){const again=await f.run('recoverable_restore',{id,reason:'loop fixture'});assert.equal(again.isError,false,text(again));assert.equal(again.value.previousAttempts,i+1);assert.match(again.value.warning,/already had a restore attempt/);}
+    const stopped=await f.run('recoverable_restore',{id,reason:'loop fixture'});assert.equal(stopped.isError,true,text(stopped));assert.match(text(stopped),/Repeated restore limit/);assert.equal(await fs.readFile(source,'utf8'),'new work must survive');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tools: disposable directories recycle without object backups; ordinary test names remain backed up',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const temp=await f.run('recovery_create_temp',{reason:'generated test output only'});assert.equal(temp.isError,false,text(temp));const directory=temp.value.directory;
+    assert.deepEqual(await fs.readdir(directory),[]);const sample=path.join(directory,'output.bin');const written=await f.run('write',{file_path:sample,content:'disposable output'});assert.equal(written.isError,false,text(written));
+    const before=await fs.readdir(path.join(f.projectVault.root,'objects'));const removed=await f.run('recoverable_delete',{paths:[directory],reason:'finished temporary test'});assert.equal(removed.isError,false,text(removed));assert.equal(removed.value.entries[0].status,'recycled-no-backup');assert.deepEqual(await fs.readdir(path.join(f.projectVault.root,'objects')),before);
+    const cannotRestore=await f.run('recoverable_restore',{id:removed.value.entries[0].id,reason:'fixture'});assert.equal(cannotRestore.isError,true,text(cannotRestore));assert.match(text(cannotRestore),/no backup copy/);
+    const ordinary=path.join(f.workspace,'tmp-test-source.txt');await fs.writeFile(ordinary,'important test source');const regular=await f.run('recoverable_delete',{paths:[ordinary],reason:'ordinary fixture'});assert.equal(regular.isError,false,text(regular));assert.equal(regular.value.entries[0].backupMode,undefined);assert.equal((await fs.readdir(path.join(f.projectVault.root,'objects'))).length,before.length+1);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project sandbox: hidden script cannot overwrite backup objects or rename the recovery directory',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'source.txt');await fs.writeFile(source,'protected backup bytes');const removed=await f.run('recoverable_delete',{paths:[source],reason:'vault guard fixture'});assert.equal(removed.isError,false,text(removed));
+    const id=removed.value.entries[0].id;const manifest=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',id,'manifest.json'),'utf8'));const object=path.join(f.projectVault.root,'objects',manifest.entries[0].hash);
+    const script=path.join(f.workspace,'vault-probe.mjs');await fs.writeFile(script,`import fs from 'node:fs';import path from 'node:path';const root=path.join(process.cwd(),'.dsh'+'-recovery');let denied=0;for(const operation of [()=>fs.writeFileSync(path.join(root,'objects',${JSON.stringify(manifest.entries[0].hash)}),'bad'),()=>fs.renameSync(root,root+'-moved')]){try{operation();}catch{denied++;}}console.log('denied='+denied);`);
+    const outcome=await f.run('pwsh',{command:'node vault-probe.mjs',description:'probe project backup protection using synthetic data'});assert.equal(outcome.isError,false,text(outcome));assert.match(text(outcome),/denied=2/);assert.equal(await fs.readFile(object,'utf8'),'protected backup bytes');
+    for(const call of [['write',{file_path:path.join(f.projectVault.root,'bad.txt'),content:'bad'}],['recoverable_delete',{paths:[f.projectVault.root],reason:'must refuse'}],['pwsh',{command:'Clear-RecycleBin -Force',description:'must refuse'}]]){const result=await f.run(...call);assert.equal(result.isError,true,text(result));}
+    const native=await f.run('write',{file_path:path.join(f.workspace,'normal.txt'),content:'ordinary work still works'});assert.equal(native.isError,false,text(native));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project checkpoint: generic script deletion is recoverable by exact relative path and excludes recovery storage',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'script-original.txt');await fs.writeFile(source,'before script deletion');const script=path.join(f.workspace,'worker.mjs');await fs.writeFile(script,"import fs from 'node:fs';fs.unlinkSync('script-original.txt');console.log('script-done');");
+    const outcome=await f.run('pwsh',{command:'node worker.mjs',description:'script with unpredictable file effects'});assert.equal(outcome.isError,false,text(outcome));assert.match(text(outcome),/script-done/);
+    const listing=await f.run('recovery_list',{});assert.equal(listing.isError,false,text(listing));const snapshot=listing.value.recent.find(e=>e.kind==='workspace-checkpoint');assert(snapshot);
+    const manifest=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',snapshot.id,'manifest.json'),'utf8'));assert(!manifest.entries.some(e=>e.relative.includes('.dsh-recovery')));
+    const full=await f.run('recoverable_restore',{id:snapshot.id,reason:'must refuse full rollback'});assert.equal(full.isError,true,text(full));
+    const later=path.join(f.workspace,'later-created.txt');await fs.writeFile(later,'later bytes must stay');const absent=await f.run('recoverable_restore',{id:snapshot.id,relative_path:'later-created.txt',reason:'checkpoint predates this file'});assert.equal(absent.isError,true,text(absent));assert.match(text(absent),/later-created files are not included/);assert.equal(await fs.readFile(later,'utf8'),'later bytes must stay');
+    const restored=await f.run('recoverable_restore',{id:snapshot.id,relative_path:'script-original.txt',reason:'restore one accidentally deleted file'});assert.equal(restored.isError,false,text(restored));assert.equal(await fs.readFile(source,'utf8'),'before script deletion');
+    for(const relative_path of ['../escape','..\\escape','.dsh-recovery/project.json']){const denied=await f.run('recoverable_restore',{id:snapshot.id,relative_path,reason:'invalid fixture'});assert.equal(denied.isError,true,text(denied));}
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project shell: exact content writes snapshot only their target and reject dynamic-path shortcuts',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'small.txt');await fs.writeFile(source,'small original');await fs.writeFile(path.join(f.workspace,'unrelated.bin'),Buffer.alloc(512*1024,63));
+    const edited=await f.run('pwsh',{command:"Set-Content -LiteralPath 'small.txt' -Value 'updated'",description:'precise shell mutation'});assert.equal(edited.isError,false,text(edited));assert.equal(edited.value.exitCode,0,text(edited));
+    const records=await f.projectVault.list();assert.equal(records.length,1);assert.equal(records[0].kind,'pre-mutation');assert.equal(records[0].original,source);assert.equal((await fs.readdir(path.join(f.projectVault.root,'objects'))).length,1);
+    const snapshot=records[0],restored=await f.run('recoverable_restore',{id:snapshot.id,reason:'compare before content edit'});assert.equal(restored.isError,false,text(restored));assert.equal(restored.value.conflictCopy,true);assert.match(await fs.readFile(source,'utf8'),/updated/);assert.equal(await fs.readFile(restored.value.destination,'utf8'),'small original');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project shell: Python tests and Git commits work while recovery contents stay out of Git',async()=>{
+  const f=await setup({projectRecovery:true});
+  const git=(args)=>{const child=spawnSync('git',args,{cwd:f.workspace,encoding:'utf8',windowsHide:true});assert.equal(child.status,0,child.stderr);return child.stdout;};
+  try{
+    git(['init','--quiet']);await fs.writeFile(path.join(f.workspace,'test_sample.py'),"import unittest,tempfile,pathlib\nclass Sample(unittest.TestCase):\n def test_temporary_output(self):\n  with tempfile.TemporaryDirectory() as directory:\n   output=pathlib.Path(directory)/'sample.txt'\n   output.write_text('temporary')\n   self.assertEqual(output.read_text(),'temporary')\n");
+    const tested=await f.run('pwsh',{command:'python -m unittest -q',description:'real Python temporary-file test'});assert.equal(tested.isError,false,text(tested));assert.equal(tested.value.exitCode,0,text(tested));
+    const add=await f.run('pwsh',{command:'git add -- .',description:'stage fixture project, excluding recovery objects'});assert.equal(add.isError,false,text(add));assert.equal(add.value.exitCode,0,text(add));assert(!git(['ls-files']).includes('.dsh-recovery'));
+    await fs.mkdir(path.join(f.root,'no-hooks'));const committed=await f.run('pwsh',{command:`git -c user.name='Recovery Fixture' -c user.email=recovery-fixture@invalid.example -c commit.gpgsign=false -c core.hooksPath='${path.join(f.root,'no-hooks')}' commit --quiet -m 'project recovery fixture'`,description:'real local fixture commit'});assert.equal(committed.isError,false,text(committed));assert.equal(committed.value.exitCode,0,text(committed));assert.equal(git(['log','-1','--format=%s']).trim(),'project recovery fixture');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project recovery with Purge: scoped restore works and protected data/backup clearing stay denied',async()=>{
+  const f=await setup({purge:true,projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'purge-scoped.txt');await fs.writeFile(source,'purge scoped original');const removed=await f.run('recoverable_delete',{paths:[source],reason:'scoped purge fixture'});assert.equal(removed.isError,false,text(removed));
+    const restored=await f.run('recoverable_restore',{id:removed.value.entries[0].id,reason:'accidental cleanup blocked continuing work'});assert.equal(restored.isError,false,text(restored));assert.equal(await fs.readFile(source,'utf8'),'purge scoped original');
+    for(const [name,args] of [['recoverable_delete',{paths:[f.config.vaultRoot],reason:'must refuse'}],['recoverable_delete',{paths:[f.projectVault.root],reason:'must refuse'}],['pwsh',{command:'Clear-RecycleBin -Force',description:'must refuse'}]]){const blocked=await f.run(name,args);assert.equal(blocked.isError,true,text(blocked));}
+    const prompts=await f.ctx.systemPrompt.assemble({});assert.match(JSON.stringify(prompts),/dsh-purge|破甲|Purge|purge/i);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project status reports the immutable workspace and cwd changes cannot expand recovery authority',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const outside=path.join(f.root,'external-acceptance');await fs.mkdir(outside);const file=path.join(outside,'fixture.txt');await fs.writeFile(file,'outside sample must stay');
+    const location=await f.run('pwsh',{command:'pwd',workdir:outside,description:'read-only cwd change'});assert.equal(location.isError,false,text(location));
+    const status=await f.run('recovery_status',{});assert.equal(status.value.boundWorkspace,f.workspace);assert.match(status.value.workspaceBinding,/does not rebind/);
+    for(const [name,args] of [['recoverable_delete',{paths:[file],reason:'outside fixture must refuse'}],['write',{file_path:file,content:'must refuse'}]]){const denied=await f.run(name,args);assert.equal(denied.isError,true,text(denied));}
+    assert.equal(await fs.readFile(file,'utf8'),'outside sample must stay');
+    const source=path.join(f.workspace,'inside.txt');await fs.writeFile(source,'inside source');const deleted=await f.run('recoverable_delete',{paths:[source],reason:'inside fixture'});assert.equal(deleted.isError,false,text(deleted));const id=deleted.value.entries[0].id;
+    const restored=await f.run('recoverable_restore',{id,reason:'inside recovery'});assert.equal(restored.isError,false,text(restored));const listing=await f.run('recovery_list',{});const record=listing.value.recent.find(e=>e.id===id);assert.equal(record.restoreDestination,source);assert.equal(record.audit.state,'complete');assert.equal(record.audit.transactionId,restored.value.audit.transactionId);
+  }finally{await f.ctx.fiber.dispose();}
+});
+async function queryFootprint(f){
+  const names=(await fs.readdir(f.config.vaultRoot,{recursive:true})).sort(),files=[];
+  for(const name of names){if(name===path.join('state','plugin-live.json')||name.endsWith('.tmp'))continue;const file=path.join(f.config.vaultRoot,name);if((await fs.lstat(file)).isFile())files.push([name,(await fs.readFile(file)).toString('base64')]);}
+  return files;
+}
+test('project queries after restart find persisted records before any open and agree without writing metadata',async()=>{
+  let f=await setup({projectRecovery:true});const original=f;
+  try{
+    const file=path.join(f.workspace,'persisted-status.txt');await fs.writeFile(file,'persistent status sample');const removed=await f.run('recoverable_delete',{paths:[file],reason:'status restart fixture'});assert.equal(removed.isError,false,text(removed));const id=removed.value.entries[0].id;
+    const restored=await f.run('recoverable_restore',{id,reason:'status receipt fixture'});assert.equal(restored.isError,false,text(restored));
+    await f.vault.snapshot(path.join(f.workspace,'persisted-status.txt'),{owner:'legacy',reason:'unrelated global record'});
+    await f.ctx.fiber.dispose();f=await setup({projectRecovery:true,existing:original});const before=await queryFootprint(f);const canaryBefore=await fs.stat(path.join(f.projectVault.root,'protection-canary.txt'));
+    const status=await f.run('recovery_status',{});assert.equal(status.isError,false,text(status));assert.equal(status.value.projectVault,f.projectVault.root);assert.equal(status.value.projectVaultState,'ready');assert.equal(status.value.recentSource,'project');assert(status.value.recent.some(e=>e.id===id));assert(status.value.recent.every(e=>e.vaultRoot===f.projectVault.root));
+    const listing=await f.run('recovery_list',{});assert.equal(listing.isError,false,text(listing));assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert.equal(listing.value.recent[0].receiptIndex.state,'readable');
+    assert.equal(status.value.recentLimit,10);assert.equal(listing.value.recentLimit,50);assert.equal(status.value.recentCount,status.value.recent.length);assert.equal(listing.value.recentCount,listing.value.recent.length);
+    const other=await f.runAs({id:'unregistered-other-query'},'recovery_status',{});assert.equal(other.value.projectVault,f.projectVault.root);assert.deepEqual(other.value.recent,[]);
+    assert.deepEqual(await queryFootprint(f),before);const canaryAfter=await fs.stat(path.join(f.projectVault.root,'protection-canary.txt'));assert.equal(canaryAfter.mtimeMs,canaryBefore.mtimeMs);
+  }finally{await f.ctx.fiber.dispose();}
+});
+test('fresh project queries stay empty and read-only even if the global archive has older records',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const legacy=path.join(f.root,'legacy.txt');await fs.writeFile(legacy,'global archive content');await f.vault.snapshot(legacy,{owner:'legacy'});const before=await queryFootprint(f);
+    for(const name of ['recovery_status','recovery_list']){const result=await f.run(name,{});assert.equal(result.isError,false,text(result));assert.equal(result.value.projectVault,null);assert.equal(result.value.projectVaultState,'absent');assert.equal(result.value.recentSource,'project');assert.deepEqual(result.value.recent,[]);assert.equal(result.value.recentLimit,name==='recovery_status'?10:50);assert.equal(result.value.recentCount,0);}
+    await assert.rejects(fs.stat(f.projectVault.root),{code:'ENOENT'});assert.deepEqual(await fs.readdir(f.workspace),[]);assert.deepEqual(await queryFootprint(f),before);
+    const missing=await f.run('recoverable_delete',{paths:[path.join(f.workspace,'.rd-probe-none.txt')],reason:'nonexistent target fixture'});assert.equal(missing.isError,true,text(missing));assert.match(text(missing),/Deletion target does not exist/);assert.doesNotMatch(text(missing),/partial batch/i);
+  }finally{await f.ctx.fiber.dispose();}
+});
+test('legacy-mode status and list identify the global source explicitly',async()=>{
+  const f=await setup();
+  try{
+    const legacy=path.join(f.root,'legacy.txt');await fs.writeFile(legacy,'global archive content');await f.vault.snapshot(legacy,{owner:'legacy'});
+    const status=await f.run('recovery_status',{}),listing=await f.run('recovery_list',{});assert.equal(status.value.recentSource,'legacy-global');assert.equal(status.value.projectVaultState,'disabled');assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert(status.value.recent.every(e=>e.vaultRoot===f.vault.root));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project query windows report caps and returned counts without truncating saved history',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const file=path.join(f.workspace,'query-window.txt');await fs.writeFile(file,'query window sample');
+    for(let i=0;i<51;i++){
+      const written=await f.run('write',{file_path:file,content:`query window sample ${i}`});assert.equal(written.isError,false,text(written));
+    }
+    const status=await f.run('recovery_status',{}),listing=await f.run('recovery_list',{});
+    assert.equal(status.isError,false,text(status));assert.equal(listing.isError,false,text(listing));
+    assert.equal(status.value.recentLimit,10);assert.equal(status.value.recentCount,10);assert.equal(status.value.recent.length,10);
+    assert.equal(listing.value.recentLimit,50);assert.equal(listing.value.recentCount,50);assert.equal(listing.value.recent.length,50);
+    assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert.equal((await f.projectVault.list(100,{readOnly:true})).length,51);
+    assert(listing.value.recent.every(e=>e.lastRestore===null&&e.audit===null&&e.receiptIndex.state==='readable'));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
 test('real Windows shell: normal work runs, arbitrary workspace script deletion has a prior checkpoint, outside writes fail',async()=>{
   const f=await setup();
   try {
@@ -90,7 +251,10 @@ test('real patched Harness: protected data and ambiguous deletion remain denied 
       ['write',{file_path:path.join(os.homedir(),'.dsh','settings.yaml'),content:'must not write'}],
       ['pwsh',{command:'Remove-Item *.json',description:'wildcard canary'}],
       ['pwsh',{command:'git clean -fd',description:'destructive Git canary'}],
-    ]) { const outcome=await f.run(name,args); assert.equal(outcome.isError,true,text(outcome)); assert.match(text(outcome),/recoverable-delete/); }
+      ['pwsh',{command:'rd /s /q nonexistent-sample',description:'unsupported CMD switches canary'}],
+      ['pwsh',{command:'Remove-Item -ErrorAction SilentlyContinue nonexistent-sample',description:'suppressed-error canary'}],
+      ['recoverable_delete',{paths:[path.join(f.workspace,'nonexistent-sample')],reason:'preflight failure canary'}],
+    ]) { const outcome=await f.run(name,args); assert.equal(outcome.isError,true,text(outcome)); assert.match(text(outcome),/recoverable-delete/); assert.equal((text(outcome).match(/\brecoverable_delete\b/g)??[]).length,1,text(outcome)); assert.match(text(outcome),/Do not bypass this protection/); assert.doesNotMatch(text(outcome),/Operation stopped|native file patches/); }
     const okay=await f.run('pwsh',{command:'Write-Output "still-responsive"',description:'subsequent normal call'}); assert.equal(okay.isError,false,text(okay)); assert.match(text(okay),/still-responsive/);
   } finally { await f.ctx.fiber.dispose(); }
 });
@@ -178,5 +342,132 @@ test('real Harness rejects CMD slash-switch deletion without snapshots or moves 
     assert.equal(menu.isError,true,text(menu));assert.match(text(menu),/资源管理器/);assert.match(text(menu),/桌面/);
     const removed=await f.run('recoverable_delete',{paths:[target]});assert.equal(removed.isError,false,text(removed));const entry=removed.value.entries[0];assert(['recycled','quarantined'].includes(entry.status));
     const restored=await f.vault.restore(entry.id);assert.equal(restored.audit.state,'complete');assert.equal(await fs.readFile(file,'utf8'),'must stay');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+
+test('project shell: nested writes are checkpointed, inline deletion is denied, literal Count stays read-only',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'wrapped.txt');await fs.writeFile(source,'before wrapped write');
+    const count=await f.run('pwsh',{command:`(Get-ChildItem -LiteralPath '${f.workspace}' -File).Count`,description:'safe literal Count projection'});assert.equal(count.isError,false,text(count));assert.equal(count.value.exitCode,0,text(count));assert.deepEqual(await f.projectVault.list(100,{readOnly:true}),[]);
+    const changed=await f.run('pwsh',{command:"Write-Output (Set-Content -LiteralPath 'wrapped.txt' -Value 'after wrapped write')",description:'nested write must have a checkpoint'});assert.equal(changed.isError,false,text(changed));assert.equal(changed.value.exitCode,0,text(changed));assert.match(await fs.readFile(source,'utf8'),/after wrapped write/);
+    const records=(await f.run('recovery_list',{})).value.recent;const checkpoint=records.find(e=>e.kind==='workspace-checkpoint');assert(checkpoint);
+    const restored=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'wrapped.txt',reason:'recover wrapped-write original'});assert.equal(restored.isError,false,text(restored));assert.equal(await fs.readFile(restored.value.destination,'utf8'),'before wrapped write');
+    const before=await f.projectVault.list(100,{readOnly:true});
+    for(const command of [`Write-Output ([System.IO.File]::Delete('${source}'))`,`Write-Output (Remove-Item -LiteralPath '${source}')`]){const blocked=await f.run('pwsh',{command,description:'nested deletion must be denied'});assert.equal(blocked.isError,true,text(blocked));}
+    assert.match(await fs.readFile(source,'utf8'),/after wrapped write/);
+    for(const command of [`(Get-ChildItem -LiteralPath '${f.projectVault.root}' -Directory).Count`,`Get-ChildItem -LiteralPath '${f.projectVault.root}' | Measure-Object`]){const read=await f.run('pwsh',{command,description:'protected-store literal read'});assert.equal(read.isError,false,text(read));assert.equal(read.value.exitCode,0,text(read));}
+    assert.deepEqual(await f.projectVault.list(100,{readOnly:true}),before);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tools: parent-file conflicts restore a separate copy without changing the blocker',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const parent=path.join(f.workspace,'blocked-parent'),source=path.join(parent,'child.txt');await fs.mkdir(parent);await fs.writeFile(source,'recover child bytes');
+    const deleted=await f.run('recoverable_delete',{paths:[source],reason:'parent conflict fixture'});assert.equal(deleted.isError,false,text(deleted));const id=deleted.value.entries[0].id;
+    const removed=await f.run('recoverable_delete',{paths:[parent],reason:'new empty parent fixture'});assert.equal(removed.isError,false,text(removed));await fs.writeFile(parent,'blocker must stay');
+    const restored=await f.run('recoverable_restore',{id,reason:'recover below a conflicting parent file'});assert.equal(restored.isError,false,text(restored));assert.equal(restored.value.conflictCopy,true);assert.equal(restored.value.conflictReason,'ancestor-not-directory');assert.equal(restored.value.audit.state,'complete');assert.equal(await fs.readFile(parent,'utf8'),'blocker must stay');assert.equal(await fs.readFile(restored.value.destination,'utf8'),'recover child bytes');
+    const summary=(await f.run('recovery_list',{})).value.recent.find(e=>e.id===id);assert.equal(summary.lastRestore.targetPublished,true);assert.equal(summary.lastRestore.phase,'complete');assert.equal(summary.restoreDestination,restored.value.destination);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tool restore failures return structured recovery details instead of deletion advice',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'failure.txt');await fs.writeFile(source,'retained source');const deleted=await f.run('recoverable_delete',{paths:[source],reason:'structured failure fixture'});const id=deleted.value.entries[0].id;
+    const copy=fs.copyFile;fs.copyFile=async(...args)=>{if(args[1].includes('.dsh-restore-'))throw Object.assign(new Error('fixture copy denied'),{code:'EPERM'});return copy(...args);};
+    let failed;try{failed=await f.run('recoverable_restore',{id,reason:'structured restore error'});}finally{fs.copyFile=copy;}
+    assert.equal(failed.isError,true,text(failed));assert.equal(failed.meta.recovery.status,'failed');assert.equal(failed.meta.recovery.targetPublished,false);assert.equal(failed.meta.recovery.backupRetained,true);assert.deepEqual(JSON.parse(failed.content[1].text).recovery,failed.meta.recovery);assert.match(failed.content.filter(c=>c.type==='text').map(c=>c.text).join(''),/protection\.\n\n\{/);assert.match(text(failed),/recovery_list/);assert.doesNotMatch(text(failed),/Use recoverable_delete/);
+    const summary=(await f.run('recovery_list',{})).value.recent.find(e=>e.id===id);assert.equal(summary.lastRestore.status,'failed');assert.equal(summary.receiptIndex.state,'readable');
+    const retried=await f.run('recoverable_restore',{id,reason:'copy failure fixed'});assert.equal(retried.isError,false,text(retried));assert.match(retried.value.warning,/already had a restore attempt/);assert.equal(await fs.readFile(source,'utf8'),'retained source');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+
+async function projectionFootprint(f){
+  const result=[];
+  for(const root of [f.config.vaultRoot,f.projectVault.root]){
+    for(const name of (await fs.readdir(root,{recursive:true})).sort()){
+      if(name===path.join('state','plugin-live.json')||name.endsWith('.tmp'))continue;
+      const file=path.join(root,name),stat=await fs.lstat(file);if(stat.isFile())result.push([root,name,stat.mtimeMs,(await fs.readFile(file)).toString('base64')]);
+    }
+  }
+  return result;
+}
+test('project shell: multi-property reads leave protected stores and checkpoint history unchanged',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const sample=path.join(f.workspace,'projection.txt');const written=await f.run('write',{file_path:sample,content:'projection original'});assert.equal(written.isError,false,text(written));
+    const before=await projectionFootprint(f);
+    for(const command of [
+      `Get-ChildItem -LiteralPath '${f.projectVault.root}' | Format-List Length,LastWriteTime`,
+      `Get-ChildItem -LiteralPath '${f.workspace}' -Force | Format-Table Name,Mode,Length -AutoSize`,
+      `Get-ChildItem -LiteralPath '${f.projectVault.root}' | Select-Object -Property Name, Length -First 3`,
+      `(Get-ChildItem -LiteralPath '${f.projectVault.root}' | Select-Object Name,Length).Count`
+    ]){const read=await f.run('pwsh',{command,description:'literal multi-property read'});assert.equal(read.isError,false,text(read));assert.equal(read.value.exitCode,0,text(read));}
+    assert.deepEqual(await projectionFootprint(f),before);
+    const nested=await f.run('pwsh',{command:`Get-ChildItem | Select-Object Name,([System.IO.File]::Delete('${sample}'))`,description:'property lists must not authorize embedded deletion'});assert.equal(nested.isError,true,text(nested));assert.equal(await fs.readFile(sample,'utf8'),'projection original');
+    const wrapped=await f.run('pwsh',{command:"Write-Output (Set-Content -LiteralPath 'projection.txt' -Value 'new projection bytes')",description:'nested writes still require a checkpoint'});assert.equal(wrapped.isError,false,text(wrapped));assert.equal(wrapped.value.exitCode,0,text(wrapped));
+    const checkpoint=(await f.run('recovery_list',{})).value.recent.find(r=>r.kind==='workspace-checkpoint');assert(checkpoint);
+    const restored=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'projection.txt',reason:'verify original survived projection work'});assert.equal(restored.isError,false,text(restored));assert.equal(await fs.readFile(restored.value.destination,'utf8'),'projection original');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tool: unknown record IDs return scoped explanations and model-visible error codes',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const sample=path.join(f.workspace,'lookup.txt');await fs.writeFile(sample,'lookup sentinel');const written=await f.run('write',{file_path:sample,content:'lookup sentinel'});assert.equal(written.isError,false,text(written));
+    const failed=await f.run('recoverable_restore',{id:'unknown-fixture-record',reason:'unknown ID must fail clearly'});assert.equal(failed.isError,true,text(failed));assert.equal(failed.meta.recovery.status,'not-found');assert.equal(failed.meta.recovery.errorCode,'RECOVERY_RECORD_NOT_FOUND');assert.equal(failed.meta.recovery.targetPublished,false);assert.equal(failed.meta.recovery.backupRetained,null);assert.deepEqual(JSON.parse(failed.content[1].text).recovery,failed.meta.recovery);assert.match(failed.content.filter(c=>c.type==='text').map(c=>c.text).join(''),/protection\.\n\n\{/);
+    assert.match(text(failed),/record not found.*recovery_list/is);assert.doesNotMatch(text(failed),/ENOENT|project-entries|Operation stopped/);assert(!text(failed).includes(f.config.vaultRoot));assert(!text(failed).includes(f.projectVault.root));assert.equal(await fs.readFile(sample,'utf8'),'lookup sentinel');
+    await assert.rejects(fs.stat(path.join(f.projectVault.root,'state','restore-transactions')),{code:'ENOENT'});await assert.rejects(fs.stat(path.join(f.config.vaultRoot,'state','restore-budgets')),{code:'ENOENT'});
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('checkpoint directory recovery requires explicit recursive scope before any attempt or copy',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const folder=path.join(f.workspace,'subtree');await fs.mkdir(path.join(folder,'nested'),{recursive:true});await fs.writeFile(path.join(folder,'one.txt'),'ONE');await fs.writeFile(path.join(folder,'nested','two.txt'),'TWO');await fs.writeFile(path.join(f.workspace,'unrelated.txt'),'KEEP');
+    const probe=await f.run('pwsh',{command:'Write-Output (1)',description:'subtree checkpoint fixture'});assert.equal(probe.isError,false,text(probe));
+    const checkpoint=(await f.run('recovery_list',{})).value.recent.find(e=>e.kind==='workspace-checkpoint');assert(checkpoint);
+    const before=await projectionFootprint(f);
+    for(const recursive of [undefined,false]){
+      const refused=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'subtree',reason:'do not silently restore all descendants',...(recursive===undefined?{}:{recursive})});assert.equal(refused.isError,true,text(refused));assert.equal(refused.meta.recovery.errorCode,'RECOVERY_RECURSIVE_REQUIRED');assert.deepEqual(refused.meta.recovery.restoreSelection,{type:'directory',recursive:true,relativePath:'subtree',files:2,directories:2,bytes:6});assert.equal(refused.meta.recovery.targetPublished,false);
+    }
+    assert.deepEqual((await projectionFootprint(f)).filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'),before.filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'));await assert.rejects(fs.stat(path.join(f.workspace,'.dsh-recovered')),{code:'ENOENT'});await assert.rejects(fs.stat(path.join(f.config.vaultRoot,'state','restore-budgets')),{code:'ENOENT'});await assert.rejects(fs.stat(path.join(f.projectVault.root,'state','restore-transactions')),{code:'ENOENT'});
+    const restored=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'subtree',recursive:true,reason:'explicitly need the complete selected subtree'});assert.equal(restored.isError,false,text(restored));assert.equal(restored.value.previousAttempts,0);assert.equal(restored.value.restoreSelection.files,2);assert.equal(restored.value.restoreSelection.bytes,6);assert.equal(restored.value.audit.state,'complete');assert.equal(await fs.readFile(path.join(restored.value.destination,'nested','two.txt'),'utf8'),'TWO');assert.equal(await fs.readFile(path.join(folder,'one.txt'),'utf8'),'ONE');assert.equal(await fs.readFile(path.join(f.workspace,'unrelated.txt'),'utf8'),'KEEP');
+    const file=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'subtree/one.txt',reason:'single file needs no recursive permission'});assert.equal(file.isError,false,text(file));assert.equal(file.value.restoreSelection.type,'file');assert.equal(file.value.restoreSelection.recursive,false);
+    const deleted=await f.run('recoverable_delete',{paths:[folder],reason:'ordinary directory fixture'});assert.equal(deleted.isError,false,text(deleted));const ordinary=await f.run('recoverable_restore',{id:deleted.value.entries[0].id,reason:'normal deleted directory still restores without a flag'});assert.equal(ordinary.isError,false,text(ordinary));assert.equal(ordinary.value.restoreSelection.files,2);assert.equal(ordinary.value.conflictCopy,false);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('deletion reason provenance distinguishes omitted, blank and explicitly identical default text',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const expected=[];
+    for(const [name,reason,provided] of [['omitted',undefined,false],['blank','   ',false],['explicit','recoverable_delete file operation',true]]){
+      const file=path.join(f.workspace,name+'.txt');await fs.writeFile(file,'reason fixture '+name);const deleted=await f.run('recoverable_delete',{paths:[file],...(reason===undefined?{}:{reason})});assert.equal(deleted.isError,false,text(deleted));const id=deleted.value.entries[0].id;const manifest=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',id,'manifest.json'),'utf8'));assert.equal(manifest.reasonProvided,provided);if(reason===undefined)assert.equal(manifest.reason,'recoverable_delete file operation');expected.push([id,provided]);
+      const restored=await f.run('recoverable_restore',{id,reason:'new metadata must be included in scoped integrity registration'});assert.equal(restored.isError,false,text(restored));
+    }
+    const temporary=await f.run('recovery_create_temp',{reason:'provenance disposable fixture'});await fs.writeFile(path.join(temporary.value.directory,'output.txt'),'rebuildable');const tempDeleted=await f.run('recoverable_delete',{paths:[temporary.value.directory]});assert.equal(tempDeleted.isError,false,text(tempDeleted));assert.equal(tempDeleted.value.entries[0].status,'recycled-no-backup');const tm=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',tempDeleted.value.entries[0].id,'manifest.json'),'utf8'));assert.equal(tm.reasonProvided,false);
+    const list=(await f.run('recovery_list',{})).value.recent;for(const [id,provided] of expected)assert.equal(list.find(e=>e.id===id).reasonProvided,provided);
+    const events=(await fs.readFile(path.join(f.projectVault.root,'audit.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);for(const [id,provided] of expected)assert(events.some(e=>e.id===id&&e.event==='snapshot-ready'&&e.reasonProvided===provided));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('protected-store literal sorting grouping uniqueness and simple filters are read-only',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const written=await f.run('write',{file_path:path.join(f.workspace,'sentinel.txt'),content:'must survive'});assert.equal(written.isError,false,text(written));
+    const before=await projectionFootprint(f);
+    for(const suffix of ['Sort-Object Name','Sort-Object -Property Name,LastWriteTime -Descending | Select-Object -First 2','Group-Object Name -NoElement','Group-Object -Property Name,Length -NoElement','Select-Object -ExpandProperty Name | Sort-Object | Get-Unique','Where-Object Name -eq objects']){
+      const outcome=await f.run('pwsh',{command:`Get-ChildItem -LiteralPath '${f.projectVault.root}' | ${suffix}`,description:'literal read-only data shaping'});assert.equal(outcome.isError,false,text(outcome));assert.equal(outcome.value.exitCode,0,text(outcome));
+    }
+    assert.deepEqual(await projectionFootprint(f),before);
+    for(const suffix of ["Sort-Object { Set-Content 'sentinel.txt' 'bad' }",'Where-Object { $_.Name -eq objects }','Group-Object Name; Write-Output extra','Sort-Object Name | Out-Null']){
+      const outcome=await f.run('pwsh',{command:`Get-ChildItem -LiteralPath '${f.projectVault.root}' | ${suffix}`,description:'new read names never authorize script blocks or multiple statements'});assert.equal(outcome.isError,true,text(outcome));
+    }
+    assert.equal(await fs.readFile(path.join(f.workspace,'sentinel.txt'),'utf8'),'must survive');assert.deepEqual((await projectionFootprint(f)).filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'),before.filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'));
   }finally{await f.ctx.fiber.dispose();}
 });

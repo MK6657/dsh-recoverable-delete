@@ -1,0 +1,66 @@
+{
+  "date": "2026-11-16T23:43:11+08:00",
+  "version": "0.2.2",
+  "host": "0.2.2-rc.3",
+  "menuRevision": 3,
+  "runs": [
+    {
+      "nodeVersion": "24.21.0",
+      "tests": 73,
+      "passed": 73,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "nodeVersion": "22.23.1",
+      "tests": 73,
+      "passed": 73,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "installedTargetedTests": {
+    "passed": 6,
+    "failures": 0
+  },
+  "syntax": {
+    "jsAndMjs": 13,
+    "powerShell": 4,
+    "python": "passed"
+  },
+  "desktopLoaded": {
+    "active": true,
+    "automaticRestore": true,
+    "shellConfinement": "active",
+    "startupProbePassed": true,
+    "sourceFingerprintMatches": true
+  },
+  "persistedRealProjectReadOnlyQuery": {
+    "cacheStillEmpty": true,
+    "projectDiscovered": true,
+    "recentSource": "project",
+    "statusListPrefixMatches": true,
+    "vaultRootOnEveryRecord": true,
+    "noNewTaskRegistration": true,
+    "canaryUnchanged": true
+  },
+  "regressionScope": [
+    "ordinary deletion and task-scoped restoration",
+    "conflict copies and no-overwrite publication",
+    "disposable recycle-only cleanup",
+    "Purge coexistence and native Windows sandbox",
+    "cold status/list consistency and read-only queries",
+    "absent and incomplete stores do not initialize or fall back",
+    "camelCase summaries and legacy aliases",
+    "contextual partial-batch errors"
+  ],
+  "purgeSourceUnchanged": true,
+  "existingRecoveryContentsPreserved": true,
+  "agentPermissionsExpanded": false,
+  "limits": [
+    "field checks are distinct from full functional regression",
+    "query summaries describe past receipts, not current target integrity",
+    "opaque scripts still use deduplicated workspace checkpoints",
+    "Windows ACL enforcement remains partial"
+  ]
+}

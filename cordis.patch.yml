@@ -5,5 +5,7 @@
       config:
         vaultRoot: 'D:/dsh-recovery-vault'
         checkpointWorkspace: true
+        projectRecovery: true
+        maxProjectStoredBytes: 2147483648
         confineShell: true
         defaultDestination: recycle

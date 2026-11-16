@@ -9,7 +9,7 @@ $nodePath='D:\DeepSeek_dsh_win\resources\runtime\primary-runtime\dependencies\no
 $cli=Join-Path $PSScriptRoot '..\bin\recover.mjs'
 while($true){
   Write-Host ''
-  Write-Host 'DSH Recoverable Files / 文件恢复（菜单修订 2）' -ForegroundColor Cyan
+  Write-Host 'DSH Recoverable Files / 文件恢复（菜单修订 3）' -ForegroundColor Cyan
   Write-Host '1. 列出可恢复记录  2. 恢复文件  3. 查看保护状态  4. 备份重要应用数据  5. 核验并补记恢复审计  0. 退出'
   $choice=Read-Host '请选择'
   if($choice -eq '0'){break}
@@ -26,7 +26,7 @@ while($true){
     $records=@($json | ConvertFrom-Json | ForEach-Object { $_ })
     $seenIds=@{}
     foreach($record in $records){
-      if($record -is [System.Array] -or $record.id -isnot [string] -or $record.id -notmatch '^[a-zA-Z0-9-]+$' -or $record.original -isnot [string] -or [string]::IsNullOrWhiteSpace($record.original) -or $record.original -match '[\r\n\x00]' -or -not [System.IO.Path]::IsPathRooted($record.original) -or $seenIds.ContainsKey($record.id)){
+      if($record -is [System.Array] -or $record.id -isnot [string] -or $record.id -notmatch '^[a-zA-Z0-9-]+$' -or $record.original -isnot [string] -or [string]::IsNullOrWhiteSpace($record.original) -or $record.original -match '[\r\n\x00]' -or -not [System.IO.Path]::IsPathRooted($record.original) -or $record.vaultRoot -isnot [string] -or -not [System.IO.Path]::IsPathRooted($record.vaultRoot) -or $seenIds.ContainsKey($record.id)){
         throw '恢复列表格式无效，已停止；没有选择或恢复任何记录。'
       }
       $seenIds[$record.id]=$true
@@ -42,6 +42,7 @@ while($true){
     $number=0
     if(-not [int]::TryParse((Read-Host '输入记录编号'),[ref]$number) -or $number -lt 1 -or $number -gt $records.Count){throw '记录编号无效'}
     $selected=$records[$number-1]
+    if($selected.status -eq 'recycled-no-backup') { throw '这是免备份测试产物，请在 Windows 回收站手动还原，或重新生成。' }
     Write-Host ('已选择记录: '+$selected.id)
     Write-Host ('原路径: '+$selected.original)
     $default=[string]$selected.original
@@ -55,7 +56,7 @@ while($true){
     Write-Host '恢复不会覆盖已有文件。账号库、会话数据库请先导出副本，核对后再导入应用。'
     $destination=Read-Host ('恢复到（直接回车使用 '+$default+'）')
     if([string]::IsNullOrWhiteSpace($destination)){$destination=$default}
-    & $nodePath $cli restore $selected.id --to $destination
+    & $nodePath $cli --vault $selected.vaultRoot restore $selected.id --to $destination
     if($LASTEXITCODE -eq 2){Write-Host '文件已经恢复；审计待补记。不要重复恢复，请选择“核验并补记恢复审计”。' -ForegroundColor Yellow;continue}
     if($LASTEXITCODE -ne 0){throw '恢复未完成；原备份仍保留。'}
   }catch{Write-Host $_.Exception.Message -ForegroundColor Red}

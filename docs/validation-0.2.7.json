@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-17T02:23:12+08:00",
+  "version": "0.2.7",
+  "host": "0.2.2-rc.3",
+  "menuRevision": 3,
+  "runs": [
+    {
+      "nodeVersion": "24.21.0",
+      "tests": 89,
+      "passed": 89,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "nodeVersion": "22.23.1",
+      "tests": 89,
+      "passed": 89,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "installedTargetedTests": {
+    "passed": 9,
+    "failures": 0,
+    "skipped": 0
+  },
+  "syntax": {
+    "jsAndMjs": 13,
+    "powerShell": 4,
+    "python": "passed",
+    "menuBom": "preserved"
+  },
+  "desktopLoaded": {
+    "active": true,
+    "automaticRestore": true,
+    "shellConfinement": "active",
+    "startupProbePassed": true,
+    "sourceFingerprintMatches": true
+  },
+  "regressionScope": [
+    "checkpoint directory selection requires recursive:true before copies, receipts or attempt budget",
+    "explicit subtree, exact file and ordinary deleted-directory recovery preserve existing targets",
+    "restoreSelection exposes actual file/directory counts and bytes",
+    "reasonProvided distinguishes missing/blank/explicit default-identical reasons and disposable cleanup",
+    "legacy provenance stays null without rewriting manifests; scoped metadata integrity still verifies",
+    "literal Sort-Object/Group-Object/Get-Unique and property-form Where-Object read without metadata writes",
+    "script blocks, computed properties, nested deletion, multiple statements and Out-Null remain guarded",
+    "all prior scoped recovery, batch/deep/zero-byte fixtures, journals, no-overwrite, Purge, actual Recycle Bin, native ACL and menu-process regressions"
+  ],
+  "independentExistingDataChecks": {
+    "objectHashesVerified": 282,
+    "retainedCopiesVerified": 2,
+    "selectedDirectoryFilesVerified": 11
+  },
+  "profileUnchanged": true,
+  "purgeSourceUnchanged": true,
+  "existingProjectRecoveryContentsUnchanged": true,
+  "agentPermissionsExpanded": false,
+  "limits": [
+    "recursive selection opt-in is required only for checkpoint directory selections, not ordinary deleted-directory records",
+    "restoreSelection is returned by the restore call; older receipt summaries remain compatible",
+    "reasonProvided applies to an explicit nonblank reason argument, not a description/default or proof of human authorization",
+    "literal data shaping support is not approval for script blocks",
+    "copy suffixes are random identifiers, not content hashes",
+    "Windows ACL enforcement remains partial and arbitrary scripts still rely on checkpoints"
+  ]
+}

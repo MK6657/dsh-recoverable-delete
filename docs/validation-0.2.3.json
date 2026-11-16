@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-17T00:20:10+08:00",
+  "version": "0.2.3",
+  "host": "0.2.2-rc.3",
+  "menuRevision": 3,
+  "runs": [
+    {
+      "nodeVersion": "24.21.0",
+      "tests": 74,
+      "passed": 74,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "nodeVersion": "22.23.1",
+      "tests": 74,
+      "passed": 74,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "installedTargetedTests": {
+    "passed": 6,
+    "failures": 0,
+    "skipped": 0
+  },
+  "syntax": {
+    "jsAndMjs": 13,
+    "powerShell": 4,
+    "python": "passed",
+    "menuBom": "preserved"
+  },
+  "desktopLoaded": {
+    "active": true,
+    "automaticRestore": true,
+    "shellConfinement": "active",
+    "startupProbePassed": true,
+    "sourceFingerprintMatches": true
+  },
+  "regressionScope": [
+    "single recovery guidance for preflight and guard failures",
+    "10/50 query windows report caps and actual counts; all 51 fixture records retained",
+    "empty and post-restart queries remain scoped and read-only",
+    "receipt readability distinct from restore completion; legacy aliases preserved",
+    "ordinary and checkpoint restoration, conflict copies, readonly files and directory trees",
+    "recycle-only disposable output, quarantine, no-overwrite races, budgets and partial failures",
+    "Purge coexistence, real Windows Recycle Bin and native ACL sandbox",
+    "PowerShell 5.1/7 recovery menu processes, Python tempfile and Git commits"
+  ],
+  "profileUnchanged": true,
+  "purgeSourceUnchanged": true,
+  "existingProjectRecoveryContentsUnchanged": true,
+  "agentPermissionsExpanded": false,
+  "limits": [
+    "field checks are distinct from full functional regression",
+    "query windows do not expose the total history size",
+    "receipt completion is historical, not current target integrity",
+    "opaque scripts retain deduplicated workspace checkpoint fallback",
+    "Windows ACL enforcement remains partial"
+  ]
+}
