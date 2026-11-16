@@ -187,6 +187,7 @@ test('project queries after restart find persisted records before any open and a
     await f.ctx.fiber.dispose();f=await setup({projectRecovery:true,existing:original});const before=await queryFootprint(f);const canaryBefore=await fs.stat(path.join(f.projectVault.root,'protection-canary.txt'));
     const status=await f.run('recovery_status',{});assert.equal(status.isError,false,text(status));assert.equal(status.value.projectVault,f.projectVault.root);assert.equal(status.value.projectVaultState,'ready');assert.equal(status.value.recentSource,'project');assert(status.value.recent.some(e=>e.id===id));assert(status.value.recent.every(e=>e.vaultRoot===f.projectVault.root));
     const listing=await f.run('recovery_list',{});assert.equal(listing.isError,false,text(listing));assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert.equal(listing.value.recent[0].receiptIndex.state,'readable');
+    assert.equal(status.value.recentLimit,10);assert.equal(listing.value.recentLimit,50);assert.equal(status.value.recentCount,status.value.recent.length);assert.equal(listing.value.recentCount,listing.value.recent.length);
     const other=await f.runAs({id:'unregistered-other-query'},'recovery_status',{});assert.equal(other.value.projectVault,f.projectVault.root);assert.deepEqual(other.value.recent,[]);
     assert.deepEqual(await queryFootprint(f),before);const canaryAfter=await fs.stat(path.join(f.projectVault.root,'protection-canary.txt'));assert.equal(canaryAfter.mtimeMs,canaryBefore.mtimeMs);
   }finally{await f.ctx.fiber.dispose();}
@@ -195,7 +196,7 @@ test('fresh project queries stay empty and read-only even if the global archive 
   const f=await setup({projectRecovery:true});
   try{
     const legacy=path.join(f.root,'legacy.txt');await fs.writeFile(legacy,'global archive content');await f.vault.snapshot(legacy,{owner:'legacy'});const before=await queryFootprint(f);
-    for(const name of ['recovery_status','recovery_list']){const result=await f.run(name,{});assert.equal(result.isError,false,text(result));assert.equal(result.value.projectVault,null);assert.equal(result.value.projectVaultState,'absent');assert.equal(result.value.recentSource,'project');assert.deepEqual(result.value.recent,[]);}
+    for(const name of ['recovery_status','recovery_list']){const result=await f.run(name,{});assert.equal(result.isError,false,text(result));assert.equal(result.value.projectVault,null);assert.equal(result.value.projectVaultState,'absent');assert.equal(result.value.recentSource,'project');assert.deepEqual(result.value.recent,[]);assert.equal(result.value.recentLimit,name==='recovery_status'?10:50);assert.equal(result.value.recentCount,0);}
     await assert.rejects(fs.stat(f.projectVault.root),{code:'ENOENT'});assert.deepEqual(await fs.readdir(f.workspace),[]);assert.deepEqual(await queryFootprint(f),before);
     const missing=await f.run('recoverable_delete',{paths:[path.join(f.workspace,'.rd-probe-none.txt')],reason:'nonexistent target fixture'});assert.equal(missing.isError,true,text(missing));assert.match(text(missing),/Deletion target does not exist/);assert.doesNotMatch(text(missing),/partial batch/i);
   }finally{await f.ctx.fiber.dispose();}
@@ -205,6 +206,22 @@ test('legacy-mode status and list identify the global source explicitly',async()
   try{
     const legacy=path.join(f.root,'legacy.txt');await fs.writeFile(legacy,'global archive content');await f.vault.snapshot(legacy,{owner:'legacy'});
     const status=await f.run('recovery_status',{}),listing=await f.run('recovery_list',{});assert.equal(status.value.recentSource,'legacy-global');assert.equal(status.value.projectVaultState,'disabled');assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert(status.value.recent.every(e=>e.vaultRoot===f.vault.root));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project query windows report caps and returned counts without truncating saved history',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const file=path.join(f.workspace,'query-window.txt');await fs.writeFile(file,'query window sample');
+    for(let i=0;i<51;i++){
+      const written=await f.run('write',{file_path:file,content:`query window sample ${i}`});assert.equal(written.isError,false,text(written));
+    }
+    const status=await f.run('recovery_status',{}),listing=await f.run('recovery_list',{});
+    assert.equal(status.isError,false,text(status));assert.equal(listing.isError,false,text(listing));
+    assert.equal(status.value.recentLimit,10);assert.equal(status.value.recentCount,10);assert.equal(status.value.recent.length,10);
+    assert.equal(listing.value.recentLimit,50);assert.equal(listing.value.recentCount,50);assert.equal(listing.value.recent.length,50);
+    assert.deepEqual(status.value.recent,listing.value.recent.slice(0,10));assert.equal((await f.projectVault.list(100,{readOnly:true})).length,51);
+    assert(listing.value.recent.every(e=>e.lastRestore===null&&e.audit===null&&e.receiptIndex.state==='readable'));
   }finally{await f.ctx.fiber.dispose();}
 });
 
@@ -233,7 +250,10 @@ test('real patched Harness: protected data and ambiguous deletion remain denied 
       ['write',{file_path:path.join(os.homedir(),'.dsh','settings.yaml'),content:'must not write'}],
       ['pwsh',{command:'Remove-Item *.json',description:'wildcard canary'}],
       ['pwsh',{command:'git clean -fd',description:'destructive Git canary'}],
-    ]) { const outcome=await f.run(name,args); assert.equal(outcome.isError,true,text(outcome)); assert.match(text(outcome),/recoverable-delete/); }
+      ['pwsh',{command:'rd /s /q nonexistent-sample',description:'unsupported CMD switches canary'}],
+      ['pwsh',{command:'Remove-Item -ErrorAction SilentlyContinue nonexistent-sample',description:'suppressed-error canary'}],
+      ['recoverable_delete',{paths:[path.join(f.workspace,'nonexistent-sample')],reason:'preflight failure canary'}],
+    ]) { const outcome=await f.run(name,args); assert.equal(outcome.isError,true,text(outcome)); assert.match(text(outcome),/recoverable-delete/); assert.equal((text(outcome).match(/\brecoverable_delete\b/g)??[]).length,1,text(outcome)); assert.match(text(outcome),/Do not bypass this protection/); }
     const okay=await f.run('pwsh',{command:'Write-Output "still-responsive"',description:'subsequent normal call'}); assert.equal(okay.isError,false,text(okay)); assert.match(text(okay),/still-responsive/);
   } finally { await f.ctx.fiber.dispose(); }
 });

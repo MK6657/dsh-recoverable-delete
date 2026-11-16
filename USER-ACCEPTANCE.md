@@ -1,4 +1,10 @@
-# 0.2.2 专用样本验收
+# 0.2.3 专用样本验收
+
+## 0.2.3 最小复测（优先执行）
+
+仅调用 recovery_status 和 recovery_list，确认 version=0.2.3、保护 active、探针通过。两工具的 recentLimit 分别为 10 和 50，recentCount 应等于各自 recent.length；同一时点前缀应一致。条数不是历史总数。未恢复记录仍应 lastRestore=null、audit=null；receiptIndex=readable 和旧 restoreQuery=complete 都不是恢复成功。
+
+可选：仅在 boundWorkspace 内，对一个先用 Test-Path 确认不存在的随机路径调用 recoverable_delete；对同一不存在路径尝试 cmd /c del。两次都应拒绝，理由清楚，recoverable_delete 指引只出现一次；不要改用其他解释器绕过。不要为这次文案/字段修复反复删除已有样本。以下完整功能验收仅在确有需要时执行。
 
 ## 升级后的只读核对
 
@@ -11,7 +17,7 @@
 
 ## 需要功能验收时：现有会话专用样本
 
-先调用 recovery_status，确认 version=0.2.2、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
+先调用 recovery_status，确认 version=0.2.3、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
 可直接发给 DSH：
 

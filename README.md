@@ -2,7 +2,7 @@
 
 为 DeepSeek Harness 的文件误操作提供可恢复路径，兼顾使用 Purge 的 Windows 开发环境。
 
-**当前开发版本为 0.2.2，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
+**当前开发版本为 0.2.3，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
 
 ## 当前版本能做什么
 
@@ -94,7 +94,7 @@ node ./bin/recover.mjs reconcile
 
 `recovery_list` 和 status.recent 返回最近恢复的 `restoreDestination`、`audit` 和 `lastRestore`；未恢复时为 null。原 `status` 继续表示删除/备份状态，恢复状态在 `lastRestore.status`。完整收据证明那次恢复曾完成，不证明目标后来未变。`receiptIndex.state=readable/partial` 只描述收据索引可读性，绝不表示“已恢复”；旧 restoreQuery 为兼容别名。输出相对路径优先使用 `lastRestore.relativePath`，旧 relative_path 别名保留，恢复工具输入仍兼容原 relative_path 参数。
 
-同一时点，status.recent 是 list.recent 的前 10 条，list 最多返回 50 条。顶层 vaultRoot 仍是全局控制/旧归档库，当前记录来源看 recentSource、projectVault 和每条记录的 vaultRoot。bytes 是逻辑数据量，不表示这条记录新增多少磁盘占用。
+同一时点，status.recent 是 list.recent 的前 10 条，list 最多返回 50 条。0.2.3 新增 recentLimit（该入口的上限）与 recentCount（本次实际返回条数），两者均不是历史总条数；数量不同不代表记录丢失。该语义和 receiptIndex 的优先级同时写入工具说明及模型提示。拒绝消息中的 recoverable_delete 指引只出现一次。顶层 vaultRoot 仍是全局控制/旧归档库，当前记录来源看 recentSource、projectVault 和每条记录的 vaultRoot。bytes 是逻辑数据量，不表示这条记录新增多少磁盘占用。
 
 ## 测试、证据与安全边界
 
