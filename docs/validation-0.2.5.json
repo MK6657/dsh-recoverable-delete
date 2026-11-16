@@ -1,0 +1,66 @@
+{
+  "date": "2026-11-17T01:28:13+08:00",
+  "version": "0.2.5",
+  "host": "0.2.2-rc.3",
+  "menuRevision": 3,
+  "runs": [
+    {
+      "nodeVersion": "24.21.0",
+      "tests": 85,
+      "passed": 85,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "nodeVersion": "22.23.1",
+      "tests": 85,
+      "passed": 85,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "installedTargetedTests": {
+    "passed": 9,
+    "failures": 0,
+    "skipped": 0
+  },
+  "syntax": {
+    "jsAndMjs": 13,
+    "powerShell": 4,
+    "python": "passed",
+    "menuBom": "preserved"
+  },
+  "desktopLoaded": {
+    "active": true,
+    "automaticRestore": true,
+    "shellConfinement": "active",
+    "startupProbePassed": true,
+    "sourceFingerprintMatches": true
+  },
+  "regressionScope": [
+    "bare multi-property projection lists read protected stores and ordinary projects without checkpoints or metadata writes",
+    "commas do not authorize arrays, calculated properties or embedded deletion",
+    "unknown IDs and missing/corrupt/unreadable record data return path-free lookup explanations and error codes",
+    "lookup failures do not create restore transactions or consume restore attempts",
+    "checkpoint selection explains the pre-command time boundary and preserves later-created files",
+    "refusals retain operation-specific causes and guidance without generic repeated text",
+    "all prior nested-effect protection, parent conflicts, restore failure journals and scoped restoration regressions",
+    "Purge coexistence, actual Windows Recycle Bin, native ACL sandbox and menu-process regressions"
+  ],
+  "independentExistingBackupChecks": {
+    "objectHashesVerified": 256,
+    "retainedCopyHashesVerified": 4,
+    "matchingCompletedReceipts": 5
+  },
+  "profileUnchanged": true,
+  "purgeSourceUnchanged": true,
+  "existingProjectRecoveryContentsUnchanged": true,
+  "agentPermissionsExpanded": false,
+  "limits": [
+    "only simple bare property lists in supported projection positions are exempt",
+    "query windows cap returned records, not stored history size",
+    "checkpoints omit files created after their pre-command snapshot",
+    "Windows ACL enforcement remains partial; unknown scripts still rely on checkpoints",
+    "historical restore receipts do not certify current target integrity"
+  ]
+}

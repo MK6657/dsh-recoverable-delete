@@ -471,3 +471,38 @@ test('restore metadata failure distinguishes a published target and reconciles o
   await fs.chmod(destination,0o444);assert.equal((await f.vault.reconcileRestores()).transactions[0].status,'reconciled');
   const receipt=JSON.parse(await fs.readFile(failure.recovery.audit.receiptPath,'utf8'));assert.equal(receipt.state,'complete');assert.equal(receipt.targetPublished,true);
 });
+
+
+test('literal projection property lists skip checkpoints without admitting other comma expressions',async()=>{
+  const f=await fixture();
+  for(const projection of ['Format-List Length,LastWriteTime','Format-Table Name,Mode,Length -AutoSize','Select-Object -Property Name, Length -First 3','Format-Table Name , Mode , Length']){
+    assert.equal(shellAssessment(`Get-ChildItem '${f.vault.root}' | ${projection}`,'pwsh',f.workspace,f.workspace,f.config).checkpoint,false,projection);
+  }
+  assert.equal(shellAssessment(`(Get-ChildItem '${f.vault.root}' | Select-Object Name,Length).Count`,'pwsh',f.workspace,f.workspace,f.config).checkpoint,false);
+  for(const command of [
+    'Write-Output Name,Length','Get-Item first,second',
+    'Get-ChildItem | Format-Table Name,Length, -AutoSize',
+    'Get-ChildItem | Select-Object Name,Length -Property One,Two',
+    'Get-ChildItem | Select-Object Name,Length,(Set-Content fixture.txt changed)',
+    "Get-ChildItem | Select-Object Name,@{Name='x';Expression={Set-Content fixture.txt changed}}",
+    'Get-ChildItem | Format-Table Name,Length | Out-File fixture.txt'
+  ])assert.equal(shellAssessment(command,'pwsh',f.workspace,f.workspace,f.config).checkpoint,true,command);
+  assert.throws(()=>shellAssessment("Get-ChildItem | Select-Object Name,([System.IO.File]::Delete('fixture.txt'))",'pwsh',f.workspace,f.workspace,f.config),/Destructive shell operation/);
+});
+
+test('restore record lookup failures hide internal paths and do not consume restore attempts',async()=>{
+  const f=await projectFixture();const source=await put(path.join(f.workspace,'lookup-source.txt'),'lookup original');const snapshot=await f.manager.snapshot(f.project,source,{owner:'scope',reason:'lookup fixture'});
+  const check=expected=>error=>{assert.equal(error.code,expected);assert.equal(error.recovery.phase,'lookup');assert.equal(error.recovery.targetPublished,false);assert.equal(error.recovery.backupRetained,null);assert.match(error.message,/recovery_list/);assert.doesNotMatch(error.message,/ENOENT|EACCES|project-entries|manifest\.json/);assert(!error.message.includes(f.root));return true;};
+  await assert.rejects(f.manager.restore(f.project,'scope',{id:'unknown-fixture-record',reason:'unknown ID fixture'}),check('RECOVERY_RECORD_NOT_FOUND'));
+  const index=path.join(f.vault.root,'state','project-entries',snapshot.id+'.json'),readFile=fs.readFile;
+  fs.readFile=async(...args)=>{if(args[0]===index)throw Object.assign(new Error(`EACCES at ${index}`),{code:'EACCES'});return readFile(...args);};
+  try{await assert.rejects(f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'index access fault fixture'}),check('RECOVERY_RECORD_UNAVAILABLE'));}finally{fs.readFile=readFile;}
+  const manifest=path.join(f.project.root,'entries',snapshot.id,'manifest.json'),saved=manifest+'.retained';await fs.rename(manifest,saved);
+  try{
+    await assert.rejects(f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'missing manifest fixture'}),check('RECOVERY_RECORD_UNAVAILABLE'));
+    await fs.writeFile(manifest,'null');await assert.rejects(f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'invalid manifest fixture'}),check('RECOVERY_RECORD_UNAVAILABLE'));
+  }finally{await fs.rename(saved,manifest);}
+  await assert.rejects(fs.stat(path.join(f.project.root,'state','restore-transactions')),{code:'ENOENT'});
+  await assert.rejects(fs.stat(path.join(f.vault.root,'state','restore-budgets')),{code:'ENOENT'});
+  const restored=await f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'valid record still restores'});assert.equal(restored.previousAttempts,0);assert.equal(await fs.readFile(restored.destination,'utf8'),'lookup original');assert.equal(await fs.readFile(source,'utf8'),'lookup original');
+});

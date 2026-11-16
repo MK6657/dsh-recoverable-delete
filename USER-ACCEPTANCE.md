@@ -1,19 +1,16 @@
-# 0.2.4 专用样本验收
+# 0.2.5 专用样本验收
 
-## 0.2.4 最小复测（优先执行）
+## 0.2.5 最小复测（优先执行）
 
-先调用 recovery_status，必须确认 version=0.2.4、保护 active、探针通过，并报告 boundWorkspace；版本不符先停止，不绕过保护。
+先调用 recovery_status 和 recovery_list，确认 version=0.2.5、active、shellConfinement=active、探针通过，并报告 boundWorkspace。保留测试结果，不清理回收站/恢复库。
 
-仅在 boundWorkspace 下新建不存在的随机专用样本目录，保留所有结果供核对：
+1. 仅以读取命令查看绑定项目及其 entries：`Get-ChildItem -LiteralPath '<目录>' | Format-List Length,LastWriteTime`、`... | Format-Table Name,Mode,Length -AutoSize`、`... | Select-Object -Property Name, Length -First 3`。应成功，执行前后 recovery_list 不新增检查点；固定 `(字面量读取管道).Count` 仍可用。
+2. 调用 recoverable_restore，使用一个先确认不在 recovery_list 中的虚构 ID 和测试原因。应返回“record not found”及 RECOVERY_RECORD_NOT_FOUND，提示查 recovery_list，不包含 ENOENT 或控制库 project-entries 路径，不写恢复目标、不消耗恢复次数。
+3. 如需复验保护，仅在 boundWorkspace 下新建随机专用样本。嵌套 Write-Output (Set-Content ...) 仍须先有检查点；`Select-Object Name,([System.IO.File]::Delete(...))` 应拒绝且样本仍在。不能借逗号属性支持放行任意表达式，不改用其他拼写绕过。
+4. 从某个检查点请求恢复在其之后才创建的专用文件，应解释“checkpoint contains files present before its command; later-created files are not included”，现有文件保持不变。
+5. 拒绝消息中不再有通用 Operation stopped 或 native file patches 说明；原因和后续工具指引保留。简单删除目标不存在、复杂删除被拒绝和恢复记录不存在本来就应有不同原因，不能要求全部文本逐字相同。
 
-1. 用 write 创建 wrapped.txt（专用测试字节）。执行 `Write-Output (Set-Content -LiteralPath '<新样本完整路径>' -Value 'CHANGED')`。应先有 workspace-checkpoint；用其中的 ID 和精确 relative_path 恢复旧字节，原位置的新内容保持，旧内容另存副本。
-2. 对这个新样本执行 `Write-Output ([System.IO.File]::Delete('<新样本完整路径>'))`，应拒绝且文件仍在。不要改换拼写或解释器尝试绕过。
-3. `(Get-ChildItem -LiteralPath '<boundWorkspace>/.dsh-recovery/entries' -Directory).Count` 应正常读取，不新增检查点；仅验证该固定 Count 形式，不将任意括号表达式视作只读。
-4. 新建专用 `parent/child.txt`，删除 child、再删除该专用空 parent，随后在 parent 位置写入专用占位文件。恢复 child 应自动另存 .dsh-recovered，conflictReason=ancestor-not-directory、audit.state=complete，占位文件不变。
-5. 可再恢复同一记录一次，检查 previousAttempts 和 warning；不要反复循环。默认每条记录/选择 30 分钟最多 3 次，失败也计数。
-6. recovery_list 应显示最新恢复尝试的 phase/targetPublished 等字段；旧收据缺少字段可为 null。查询窗口仍为 10/50，recentCount 等于各自 recent.length，均不是历史总数。
-
-复制/审计故障已由独立进程在全新样本上注入验收。不要损坏真实收据、改 ACL、清空恢复库或删除插件来制造故障。遇 failed / incomplete / restored-audit-pending，先读取失败详情和已有副本；不能把“未发布目标”误读成“没有暂存写入”。暂存与备份均不自动清理。
+原删除/恢复、父级冲突副本、错误收据、重复恢复次数规则不变；已由独立进程完整回归。不需要为这次小修反复删除已有样本，也不要损坏真实元数据制造失败。
 
 ## 升级后的只读核对
 
@@ -26,7 +23,7 @@
 
 ## 需要功能验收时：现有会话专用样本
 
-先调用 recovery_status，确认 version=0.2.4、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
+先调用 recovery_status，确认 version=0.2.5、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
 可直接发给 DSH：
 
@@ -44,6 +41,10 @@
 如果要使用另一目录里的现成验收样本，需要人先在 GUI 将该目录添加为工作区，并在该工作区新建会话。新会话先检查 recovery_status.boundWorkspace 与目标项目完全一致，再开始删除。
 
 不能靠 shell workdir、working_directory、subagent 的 cwd 参数让已有父会话改绑。如果没有 GUI 操作条件，停止对外部样本的修改，采用上面的当前会话专用样本方案；不要绕过保护或不断换解释器试探。
+
+## 检查点时间边界
+
+检查点只保存其对应命令执行前存在的文件内容，不含后来新建的文件。选错记录或相对路径时先核对记录时间，不把正确拒绝理解成恢复库丢数据。
 
 ## 结果含义
 
