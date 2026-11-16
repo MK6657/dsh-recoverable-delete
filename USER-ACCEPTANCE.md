@@ -1,14 +1,18 @@
-# 0.2.5 专用样本验收
+# 0.2.6 专用样本验收
 
-## 0.2.5 最小复测（优先执行）
+## 0.2.6 最小复测（优先执行）
 
-先调用 recovery_status 和 recovery_list，确认 version=0.2.5、active、shellConfinement=active、探针通过，并报告 boundWorkspace。保留测试结果，不清理回收站/恢复库。
+先调用 recovery_status 和 recovery_list，确认 version=0.2.6、active、shellConfinement=active、探针通过，并报告 boundWorkspace。保留测试结果，不清理回收站/恢复库。
 
 1. 仅以读取命令查看绑定项目及其 entries：`Get-ChildItem -LiteralPath '<目录>' | Format-List Length,LastWriteTime`、`... | Format-Table Name,Mode,Length -AutoSize`、`... | Select-Object -Property Name, Length -First 3`。应成功，执行前后 recovery_list 不新增检查点；固定 `(字面量读取管道).Count` 仍可用。
-2. 调用 recoverable_restore，使用一个先确认不在 recovery_list 中的虚构 ID 和测试原因。应返回“record not found”及 RECOVERY_RECORD_NOT_FOUND，提示查 recovery_list，不包含 ENOENT 或控制库 project-entries 路径，不写恢复目标、不消耗恢复次数。
+2. 错误说明与 JSON 详情应有可见空行，JSON 能单独复制解析；errorCode 等结构化字段保持不变。调用 recoverable_restore，使用一个先确认不在 recovery_list 中的虚构 ID 和测试原因。应返回“record not found”及 RECOVERY_RECORD_NOT_FOUND，提示查 recovery_list，不包含 ENOENT 或控制库 project-entries 路径，不写恢复目标、不消耗恢复次数。
 3. 如需复验保护，仅在 boundWorkspace 下新建随机专用样本。嵌套 Write-Output (Set-Content ...) 仍须先有检查点；`Select-Object Name,([System.IO.File]::Delete(...))` 应拒绝且样本仍在。不能借逗号属性支持放行任意表达式，不改用其他拼写绕过。
 4. 从某个检查点请求恢复在其之后才创建的专用文件，应解释“checkpoint contains files present before its command; later-created files are not included”，现有文件保持不变。
 5. 拒绝消息中不再有通用 Operation stopped 或 native file patches 说明；原因和后续工具指引保留。简单删除目标不存在、复杂删除被拒绝和恢复记录不存在本来就应有不同原因，不能要求全部文本逐字相同。
+
+核对某条命令有没有新增备份时，在没有并发任务的条件下对比前后 recovery_list 的记录 ID、kind、at、reason，并对照工具结果。lastCheckpoint 只记录本进程受监督 shell 备份步骤的结果，不汇总原生 write/edit 等全部备份；启动时或目标原本不存在时可为 null；列表最多 50 条，reason 也不是执行成功证明。不能只用 lastCheckpoint 不变或条数不变得出“没有新增”的结论。
+
+命令执行失败也保留其执行前检查点，这是预期行为。非零退出可能已写入部分文件，不能据此标 unused、删除备份或反复清理。
 
 原删除/恢复、父级冲突副本、错误收据、重复恢复次数规则不变；已由独立进程完整回归。不需要为这次小修反复删除已有样本，也不要损坏真实元数据制造失败。
 
@@ -23,7 +27,7 @@
 
 ## 需要功能验收时：现有会话专用样本
 
-先调用 recovery_status，确认 version=0.2.5、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
+先调用 recovery_status，确认 version=0.2.6、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
 可直接发给 DSH：
 
