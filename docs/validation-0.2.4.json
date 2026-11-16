@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-17T00:54:31+08:00",
+  "version": "0.2.4",
+  "host": "0.2.2-rc.3",
+  "menuRevision": 3,
+  "runs": [
+    {
+      "nodeVersion": "24.21.0",
+      "tests": 81,
+      "passed": 81,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "nodeVersion": "22.23.1",
+      "tests": 81,
+      "passed": 81,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "installedTargetedTests": {
+    "passed": 9,
+    "failures": 0,
+    "skipped": 0
+  },
+  "syntax": {
+    "jsAndMjs": 13,
+    "powerShell": 4,
+    "python": "passed",
+    "menuBom": "preserved"
+  },
+  "desktopLoaded": {
+    "active": true,
+    "automaticRestore": true,
+    "shellConfinement": "active",
+    "startupProbePassed": true,
+    "sourceFingerprintMatches": true
+  },
+  "realHostRegression": [
+    "nested write first checkpoints old bytes and permits exact-path restoration",
+    "explicit nested .NET and PowerShell deletion refused",
+    "literal Count projection reads protected store without a checkpoint",
+    "parent-file conflicts recover a project-local separate copy",
+    "repeated restore attempts warn while retaining existing caps",
+    "structured failure metadata survives host error normalization and is model-visible",
+    "original recovery, Purge, native ACL sandbox, Recycle Bin and menu-process regressions"
+  ],
+  "faultInjectionOnDedicatedSamples": [
+    "second staging copy failure records failed with retained staging and unpublished target",
+    "published readonly-metadata failure stays incomplete until content and attributes match",
+    "reconciliation does not certify a different later target for a failed transaction"
+  ],
+  "historicalPreparedReceiptsPreserved": true,
+  "profileUnchanged": true,
+  "purgeSourceUnchanged": true,
+  "existingProjectRecoveryContentsUnchanged": true,
+  "agentPermissionsExpanded": false,
+  "limits": [
+    "unknown expressions still use deduplicated workspace checkpoints, not per-file syscall interception",
+    "narrow literal Count support is not general expression approval",
+    "failed restores can retain staging data; no automatic cleanup",
+    "legacy prepared and interrupted publishing receipts remain unknown until inspection",
+    "Windows ACL enforcement remains partial",
+    "field checks and independent functional regression are distinct"
+  ]
+}

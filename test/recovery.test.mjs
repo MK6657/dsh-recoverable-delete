@@ -412,3 +412,62 @@ test('restore CLI refuses extra record IDs instead of silently restoring the fir
   }
   assert.doesNotMatch(await fs.readFile(path.join(f.vault.root,'audit.jsonl'),'utf8'),/restore-started/);
 });
+
+
+test('read-only exemption rejects nested effects and native write/helper options while accepting literal Count',async()=>{
+  const f=await fixture();
+  for(const command of [
+    "Write-Output (Set-Content -LiteralPath 'fixture.txt' -Value changed)",
+    'Get-Item "$(Set-Content fixture.txt changed)"',
+    "Get-ChildItem | Select-Object @{Name='x';Expression={Set-Content fixture.txt changed}}",
+    "Write-Output ([System.IO.File]::WriteAllText('fixture.txt','changed'))",
+    'git diff --output=fixture.txt','git diff --out=fixture.txt','rg --pre helper sample',
+    'Get-ChildItem | Select-Unknown Name'
+  ])assert.equal(shellAssessment(command,'pwsh',f.workspace,f.workspace,f.config).checkpoint,true,command);
+  for(const command of [
+    `(Get-ChildItem -LiteralPath '${f.vault.root}' -Directory).Count`,
+    `(Get-ChildItem -LiteralPath "${f.vault.root}" | Where-Object Name).Count`,
+    "Write-Output 'literal (parentheses) and $variables'",
+    'Get-ChildItem | Select-Object Name | Measure-Object'
+  ])assert.equal(shellAssessment(command,'pwsh',f.workspace,f.workspace,f.config).checkpoint,false,command);
+  for(const command of ["Write-Output ([System.IO.File]::Delete('fixture.txt'))","Write-Output ([System.IO.Directory]::Delete('fixture'))"])
+    assert.throws(()=>shellAssessment(command,'pwsh',f.workspace,f.workspace,f.config),/Destructive shell operation/,command);
+});
+
+test('restore preflight explains a parent-file conflict before journaling or staging',async()=>{
+  const f=await fixture();const source=await put(path.join(f.workspace,'parent','child.txt'),'saved child');const snapshot=await f.vault.snapshot(source);
+  await f.vault.remove([path.dirname(source)],{workspace:f.workspace,owner:'preflight'});await put(path.dirname(source),'parent file must stay');
+  await assert.rejects(f.vault.restore(snapshot.id),error=>{
+    assert.equal(error.code,'RECOVERY_PATH_CONFLICT');assert.equal(error.recovery.phase,'preflight');assert.equal(error.recovery.targetPublished,false);assert.match(error.message,/parent path is not a directory/);return true;
+  });
+  assert.equal(await fs.readFile(path.dirname(source),'utf8'),'parent file must stay');
+  await assert.rejects(fs.stat(path.join(f.vault.root,'state','restore-transactions')),{code:'ENOENT'});
+  const copy=path.join(f.workspace,'recovered-child.txt');await f.vault.restore(snapshot.id,{destination:copy});assert.equal(await fs.readFile(copy,'utf8'),'saved child');
+});
+
+test('restore copy failure records failed phase and retained staging without certifying a later target',async()=>{
+  const f=await projectFixture();const source=path.join(f.workspace,'copy-fault');await put(path.join(source,'a.txt'),'first bytes');await put(path.join(source,'b.txt'),'second bytes');
+  const [entry]=await f.manager.remove(f.project,[source],{owner:'scope',reason:'copy failure fixture',destination:'quarantine'});
+  const originalCopy=fs.copyFile;let failure;
+  fs.copyFile=async(...args)=>{if(args[1].includes('.dsh-restore-')&&path.basename(args[1])==='b.txt')throw Object.assign(new Error('injected second-copy fault'),{code:'EIO'});return originalCopy(...args);};
+  try{await assert.rejects(f.manager.restore(f.project,'scope',{id:entry.id,reason:'verify recoverable failure'}),error=>{failure=error;return error.code==='EIO';});}finally{fs.copyFile=originalCopy;}
+  assert.equal(failure.recovery.targetPublished,false);assert.equal(failure.recovery.status,'failed');assert.match(failure.message,/Temporary staging data/);assert.match(failure.message,/Backup .* retained/);
+  const receipt=JSON.parse(await fs.readFile(failure.recovery.audit.receiptPath,'utf8'));assert.equal(receipt.state,'failed');assert.equal(receipt.phase,'materializing');assert.equal(receipt.targetPublished,false);assert.equal(receipt.errorCode,'EIO');assert.equal(await fs.readFile(path.join(receipt.stagingPath,'a.txt'),'utf8'),'first bytes');
+  await assert.rejects(fs.stat(source),{code:'ENOENT'});
+  const summary=(await f.manager.list(f.project,'scope')).find(r=>r.id===entry.id);assert.equal(summary.lastRestore.status,'failed');assert.equal(summary.lastRestore.stagingPath,receipt.stagingPath);assert.equal(summary.lastRestore.targetPublished,false);assert.equal(summary.audit.state,'incomplete');assert.equal(summary.receiptIndex.state,'readable');
+  // A different process later creating matching bytes is not this failed restore.
+  await put(path.join(source,'a.txt'),'first bytes');await put(path.join(source,'b.txt'),'second bytes');
+  const reconciled=await f.project.vault.reconcileRestores();assert.equal(reconciled.transactions[0].status,'failed-no-target-published');assert.equal(JSON.parse(await fs.readFile(failure.recovery.audit.receiptPath,'utf8')).state,'failed');
+  const copy=path.join(f.workspace,'successful-copy');await f.project.vault.restore(entry.id,{destination:copy});assert.equal(await fs.readFile(path.join(copy,'b.txt'),'utf8'),'second bytes');
+});
+
+test('restore metadata failure distinguishes a published target and reconciles only after attributes match',async()=>{
+  const f=await fixture();const source=await put(path.join(f.workspace,'readonly-source'),'published bytes');await fs.chmod(source,0o444);const snapshot=await f.vault.snapshot(source);const destination=path.join(f.workspace,'published-target');
+  const chmod=fs.chmod;let failure;
+  fs.chmod=async(file,mode)=>{if(file===destination)throw Object.assign(new Error('injected metadata fault'),{code:'EACCES'});return chmod(file,mode);};
+  try{await assert.rejects(f.vault.restore(snapshot.id,{destination}),error=>{failure=error;return error.code==='EACCES';});}finally{fs.chmod=chmod;}
+  assert.equal(failure.recovery.targetPublished,true);assert.equal(failure.recovery.status,'published-incomplete');assert.equal(failure.recovery.phase,'metadata');assert.match(failure.message,/target was published/);assert.equal(await fs.readFile(destination,'utf8'),'published bytes');
+  assert.equal((await f.vault.reconcileRestores()).transactions[0].status,'target-changed-not-reconciled');
+  await fs.chmod(destination,0o444);assert.equal((await f.vault.reconcileRestores()).transactions[0].status,'reconciled');
+  const receipt=JSON.parse(await fs.readFile(failure.recovery.audit.receiptPath,'utf8'));assert.equal(receipt.state,'complete');assert.equal(receipt.targetPublished,true);
+});

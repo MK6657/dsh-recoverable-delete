@@ -89,7 +89,7 @@ test('project tools: conflicts preserve new content, trusted children share scop
     const source=path.join(f.workspace,'conflict.txt');await fs.writeFile(source,'old contents');
     const removed=await f.run('recoverable_delete',{paths:[source],reason:'fixture deletion'});assert.equal(removed.isError,false,text(removed));const id=removed.value.entries[0].id;await fs.writeFile(source,'new work must survive');
     const child=await f.runAs({id:'trusted-child',parentSession:'acceptance-session'},'recoverable_restore',{id,reason:'need the old version for comparison'});assert.equal(child.isError,false,text(child));assert.equal(child.value.conflictCopy,true);assert.equal(await fs.readFile(source,'utf8'),'new work must survive');assert.equal(await fs.readFile(child.value.destination,'utf8'),'old contents');
-    for(let i=0;i<2;i++){const again=await f.run('recoverable_restore',{id,reason:'loop fixture'});assert.equal(again.isError,false,text(again));}
+    for(let i=0;i<2;i++){const again=await f.run('recoverable_restore',{id,reason:'loop fixture'});assert.equal(again.isError,false,text(again));assert.equal(again.value.previousAttempts,i+1);assert.match(again.value.warning,/already had a restore attempt/);}
     const stopped=await f.run('recoverable_restore',{id,reason:'loop fixture'});assert.equal(stopped.isError,true,text(stopped));assert.match(text(stopped),/Repeated restore limit/);assert.equal(await fs.readFile(source,'utf8'),'new work must survive');
   }finally{await f.ctx.fiber.dispose();}
 });
@@ -341,5 +341,45 @@ test('real Harness rejects CMD slash-switch deletion without snapshots or moves 
     assert.equal(menu.isError,true,text(menu));assert.match(text(menu),/资源管理器/);assert.match(text(menu),/桌面/);
     const removed=await f.run('recoverable_delete',{paths:[target]});assert.equal(removed.isError,false,text(removed));const entry=removed.value.entries[0];assert(['recycled','quarantined'].includes(entry.status));
     const restored=await f.vault.restore(entry.id);assert.equal(restored.audit.state,'complete');assert.equal(await fs.readFile(file,'utf8'),'must stay');
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+
+test('project shell: nested writes are checkpointed, inline deletion is denied, literal Count stays read-only',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'wrapped.txt');await fs.writeFile(source,'before wrapped write');
+    const count=await f.run('pwsh',{command:`(Get-ChildItem -LiteralPath '${f.workspace}' -File).Count`,description:'safe literal Count projection'});assert.equal(count.isError,false,text(count));assert.equal(count.value.exitCode,0,text(count));assert.deepEqual(await f.projectVault.list(100,{readOnly:true}),[]);
+    const changed=await f.run('pwsh',{command:"Write-Output (Set-Content -LiteralPath 'wrapped.txt' -Value 'after wrapped write')",description:'nested write must have a checkpoint'});assert.equal(changed.isError,false,text(changed));assert.equal(changed.value.exitCode,0,text(changed));assert.match(await fs.readFile(source,'utf8'),/after wrapped write/);
+    const records=(await f.run('recovery_list',{})).value.recent;const checkpoint=records.find(e=>e.kind==='workspace-checkpoint');assert(checkpoint);
+    const restored=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'wrapped.txt',reason:'recover wrapped-write original'});assert.equal(restored.isError,false,text(restored));assert.equal(await fs.readFile(restored.value.destination,'utf8'),'before wrapped write');
+    const before=await f.projectVault.list(100,{readOnly:true});
+    for(const command of [`Write-Output ([System.IO.File]::Delete('${source}'))`,`Write-Output (Remove-Item -LiteralPath '${source}')`]){const blocked=await f.run('pwsh',{command,description:'nested deletion must be denied'});assert.equal(blocked.isError,true,text(blocked));}
+    assert.match(await fs.readFile(source,'utf8'),/after wrapped write/);
+    for(const command of [`(Get-ChildItem -LiteralPath '${f.projectVault.root}' -Directory).Count`,`Get-ChildItem -LiteralPath '${f.projectVault.root}' | Measure-Object`]){const read=await f.run('pwsh',{command,description:'protected-store literal read'});assert.equal(read.isError,false,text(read));assert.equal(read.value.exitCode,0,text(read));}
+    assert.deepEqual(await f.projectVault.list(100,{readOnly:true}),before);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tools: parent-file conflicts restore a separate copy without changing the blocker',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const parent=path.join(f.workspace,'blocked-parent'),source=path.join(parent,'child.txt');await fs.mkdir(parent);await fs.writeFile(source,'recover child bytes');
+    const deleted=await f.run('recoverable_delete',{paths:[source],reason:'parent conflict fixture'});assert.equal(deleted.isError,false,text(deleted));const id=deleted.value.entries[0].id;
+    const removed=await f.run('recoverable_delete',{paths:[parent],reason:'new empty parent fixture'});assert.equal(removed.isError,false,text(removed));await fs.writeFile(parent,'blocker must stay');
+    const restored=await f.run('recoverable_restore',{id,reason:'recover below a conflicting parent file'});assert.equal(restored.isError,false,text(restored));assert.equal(restored.value.conflictCopy,true);assert.equal(restored.value.conflictReason,'ancestor-not-directory');assert.equal(restored.value.audit.state,'complete');assert.equal(await fs.readFile(parent,'utf8'),'blocker must stay');assert.equal(await fs.readFile(restored.value.destination,'utf8'),'recover child bytes');
+    const summary=(await f.run('recovery_list',{})).value.recent.find(e=>e.id===id);assert.equal(summary.lastRestore.targetPublished,true);assert.equal(summary.lastRestore.phase,'complete');assert.equal(summary.restoreDestination,restored.value.destination);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('project tool restore failures return structured recovery details instead of deletion advice',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const source=path.join(f.workspace,'failure.txt');await fs.writeFile(source,'retained source');const deleted=await f.run('recoverable_delete',{paths:[source],reason:'structured failure fixture'});const id=deleted.value.entries[0].id;
+    const copy=fs.copyFile;fs.copyFile=async(...args)=>{if(args[1].includes('.dsh-restore-'))throw Object.assign(new Error('fixture copy denied'),{code:'EPERM'});return copy(...args);};
+    let failed;try{failed=await f.run('recoverable_restore',{id,reason:'structured restore error'});}finally{fs.copyFile=copy;}
+    assert.equal(failed.isError,true,text(failed));assert.equal(failed.meta.recovery.status,'failed');assert.equal(failed.meta.recovery.targetPublished,false);assert.equal(failed.meta.recovery.backupRetained,true);assert.deepEqual(JSON.parse(failed.content[1].text).recovery,failed.meta.recovery);assert.match(text(failed),/recovery_list/);assert.doesNotMatch(text(failed),/Use recoverable_delete/);
+    const summary=(await f.run('recovery_list',{})).value.recent.find(e=>e.id===id);assert.equal(summary.lastRestore.status,'failed');assert.equal(summary.receiptIndex.state,'readable');
+    const retried=await f.run('recoverable_restore',{id,reason:'copy failure fixed'});assert.equal(retried.isError,false,text(retried));assert.match(retried.value.warning,/already had a restore attempt/);assert.equal(await fs.readFile(source,'utf8'),'retained source');
   }finally{await f.ctx.fiber.dispose();}
 });

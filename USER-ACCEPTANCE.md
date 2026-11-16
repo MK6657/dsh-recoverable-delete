@@ -1,10 +1,19 @@
-# 0.2.3 专用样本验收
+# 0.2.4 专用样本验收
 
-## 0.2.3 最小复测（优先执行）
+## 0.2.4 最小复测（优先执行）
 
-仅调用 recovery_status 和 recovery_list，确认 version=0.2.3、保护 active、探针通过。两工具的 recentLimit 分别为 10 和 50，recentCount 应等于各自 recent.length；同一时点前缀应一致。条数不是历史总数。未恢复记录仍应 lastRestore=null、audit=null；receiptIndex=readable 和旧 restoreQuery=complete 都不是恢复成功。
+先调用 recovery_status，必须确认 version=0.2.4、保护 active、探针通过，并报告 boundWorkspace；版本不符先停止，不绕过保护。
 
-可选：仅在 boundWorkspace 内，对一个先用 Test-Path 确认不存在的随机路径调用 recoverable_delete；对同一不存在路径尝试 cmd /c del。两次都应拒绝，理由清楚，recoverable_delete 指引只出现一次；不要改用其他解释器绕过。不要为这次文案/字段修复反复删除已有样本。以下完整功能验收仅在确有需要时执行。
+仅在 boundWorkspace 下新建不存在的随机专用样本目录，保留所有结果供核对：
+
+1. 用 write 创建 wrapped.txt（专用测试字节）。执行 `Write-Output (Set-Content -LiteralPath '<新样本完整路径>' -Value 'CHANGED')`。应先有 workspace-checkpoint；用其中的 ID 和精确 relative_path 恢复旧字节，原位置的新内容保持，旧内容另存副本。
+2. 对这个新样本执行 `Write-Output ([System.IO.File]::Delete('<新样本完整路径>'))`，应拒绝且文件仍在。不要改换拼写或解释器尝试绕过。
+3. `(Get-ChildItem -LiteralPath '<boundWorkspace>/.dsh-recovery/entries' -Directory).Count` 应正常读取，不新增检查点；仅验证该固定 Count 形式，不将任意括号表达式视作只读。
+4. 新建专用 `parent/child.txt`，删除 child、再删除该专用空 parent，随后在 parent 位置写入专用占位文件。恢复 child 应自动另存 .dsh-recovered，conflictReason=ancestor-not-directory、audit.state=complete，占位文件不变。
+5. 可再恢复同一记录一次，检查 previousAttempts 和 warning；不要反复循环。默认每条记录/选择 30 分钟最多 3 次，失败也计数。
+6. recovery_list 应显示最新恢复尝试的 phase/targetPublished 等字段；旧收据缺少字段可为 null。查询窗口仍为 10/50，recentCount 等于各自 recent.length，均不是历史总数。
+
+复制/审计故障已由独立进程在全新样本上注入验收。不要损坏真实收据、改 ACL、清空恢复库或删除插件来制造故障。遇 failed / incomplete / restored-audit-pending，先读取失败详情和已有副本；不能把“未发布目标”误读成“没有暂存写入”。暂存与备份均不自动清理。
 
 ## 升级后的只读核对
 
@@ -17,7 +26,7 @@
 
 ## 需要功能验收时：现有会话专用样本
 
-先调用 recovery_status，确认 version=0.2.3、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
+先调用 recovery_status，确认 version=0.2.4、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
 可直接发给 DSH：
 
@@ -38,10 +47,10 @@
 
 ## 结果含义
 
-- status 是原删除/备份事件状态，例如 recycled；最近恢复在 lastRestore 中。
+- status 是原删除/备份事件状态，例如 recycled；最近恢复尝试在 lastRestore 中，失败也是一条尝试。
 - restoreDestination 是最近持久收据中的目标；audit.state=complete 说明那次恢复的审计已完成，不保证目标后来没有被再次修改或清理。
 - restored-audit-pending 表示文件已恢复但审计待补记，交由人工菜单选 5 核验，不重复恢复。
-- incomplete 表示事务没有完整成功收据；receiptIndex.state=partial（旧别名 restoreQuery.state=partial）表示部分收据无法读取，不得推断“全部审计完成”。
+- failed 表示正常捕获且确认未发布最终目标的失败；stagingPath 处仍可能有部分副本。incomplete 表示中断、发布后未完成或没有完整成功收据；receiptIndex.state=partial（旧别名 restoreQuery.state=partial）表示部分收据无法读取，不得推断“全部审计完成”。
 
 ## 人工恢复与旧版兼容
 
