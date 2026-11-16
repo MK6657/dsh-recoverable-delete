@@ -4,6 +4,8 @@
 
 先调用 recovery_status 和 recovery_list，确认 version=0.2.6、active、shellConfinement=active、探针通过，并报告 boundWorkspace。保留测试结果，不清理回收站/恢复库。
 
+只读命令须为单条受支持的字面量管道，不要追加未引用的 `; echo ...` 或换行收尾语句。`Out-Null` 本身也不在只读白名单，即使没有分号，读取恢复库的管道加它也会被拒绝；无需为验收刻意制造拒绝，直接显示结果或用 `Select-Object -First N` 限制输出即可。
+
 1. 仅以读取命令查看绑定项目及其 entries：`Get-ChildItem -LiteralPath '<目录>' | Format-List Length,LastWriteTime`、`... | Format-Table Name,Mode,Length -AutoSize`、`... | Select-Object -Property Name, Length -First 3`。应成功，执行前后 recovery_list 不新增检查点；固定 `(字面量读取管道).Count` 仍可用。
 2. 错误说明与 JSON 详情应有可见空行，JSON 能单独复制解析；errorCode 等结构化字段保持不变。调用 recoverable_restore，使用一个先确认不在 recovery_list 中的虚构 ID 和测试原因。应返回“record not found”及 RECOVERY_RECORD_NOT_FOUND，提示查 recovery_list，不包含 ENOENT 或控制库 project-entries 路径，不写恢复目标、不消耗恢复次数。
 3. 如需复验保护，仅在 boundWorkspace 下新建随机专用样本。嵌套 Write-Output (Set-Content ...) 仍须先有检查点；`Select-Object Name,([System.IO.File]::Delete(...))` 应拒绝且样本仍在。不能借逗号属性支持放行任意表达式，不改用其他拼写绕过。
