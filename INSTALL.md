@@ -1,4 +1,4 @@
-# 安装与回退（0.2.0）
+# 安装与回退（0.2.1）
 
 这是 Windows 上针对 DSH 0.2.2-rc.3 的本地适配源码；路径和依赖需要先审阅，不提供一键跨环境安装承诺。完整安装会修改当前用户的 desktop profile，必须先正常退出 DSH 并备份该 profile。不要以覆盖整份旧 profile 的方式回退后续插件。
 
@@ -33,10 +33,11 @@ node ./scripts/install-local.mjs
 
 启动 DSH 后调用 `recovery_status`，至少核实：
 
-- `version: 0.2.0`、`active: true`、`startupError: null`。
+- `version: 0.2.1`、`active: true`、`startupError: null`。
 - `shellConfinement: active`、`startupProbe.passed: true`。
 - `hostVersion: 0.2.2-rc.3`、实际宿主 Node 及源码指纹。
 - `projectRecovery: true`、`automaticRestore: true`；首次项目修改后 projectVault 应指向该工作区 .dsh-recovery。
+- `boundWorkspace` 为本会话实际绑定的工作区；改 shell/tools cwd 不代表改绑，换项目需从 GUI 选择工作区并新建会话。
 
 projectRecovery=false 是旧全局备份模式的兼容设置，不提供自动恢复或测试目录豁免。默认安装应使用 true；不应靠关闭保护绕过测试失败。Python 临时目录兼容仅注入受监督子进程，不修改全局 Python。
 

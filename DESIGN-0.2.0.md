@@ -34,6 +34,8 @@
 
 `recovery_list` 仅返回当前任务的项目记录。`recoverable_restore` 参数为 ID、原因及可选 relative_path，没有任意目标、owner、vaultRoot 或覆盖开关。
 
+0.2.1：recovery_status.boundWorkspace 用于调用前确认会话边界；工具级 cwd 和工作目录切换不重新授权。recovery_list 以持久恢复收据提供 lastRestore、restoreDestination、audit，不修改原删除状态。null 表示未查询到恢复收据；prepared 对应 incomplete，审计待补记对应 pending，完成收据对应 complete。遇损坏或无法解释的收据明确标记查询 partial；这些都是历史事件摘要，不认证当前目标仍与备份相同。
+
 宿主提供的会话 ID 是任务根；已登记的同工作区父子会话共享任务域，跨插件重启延续。未见过父任务的子会话保守地自成任务域，不凭模型声明合并。会话工作区或父关系改变时拒绝自动恢复。
 
 执行前核对受保护索引中的项目、任务和清单摘要，验证内容对象。只恢复本任务原工作区的普通数据，不恢复链接或受保护应用数据。工作区检查点必须选择具体相对路径，不能自动全项目回滚。

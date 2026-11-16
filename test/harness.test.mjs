@@ -160,6 +160,19 @@ test('project recovery with Purge: scoped restore works and protected data/backu
     const prompts=await f.ctx.systemPrompt.assemble({});assert.match(JSON.stringify(prompts),/dsh-purge|破甲|Purge|purge/i);
   }finally{await f.ctx.fiber.dispose();}
 });
+
+test('project status reports the immutable workspace and cwd changes cannot expand recovery authority',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const outside=path.join(f.root,'external-acceptance');await fs.mkdir(outside);const file=path.join(outside,'fixture.txt');await fs.writeFile(file,'outside sample must stay');
+    const location=await f.run('pwsh',{command:'pwd',workdir:outside,description:'read-only cwd change'});assert.equal(location.isError,false,text(location));
+    const status=await f.run('recovery_status',{});assert.equal(status.value.boundWorkspace,f.workspace);assert.match(status.value.workspaceBinding,/does not rebind/);
+    for(const [name,args] of [['recoverable_delete',{paths:[file],reason:'outside fixture must refuse'}],['write',{file_path:file,content:'must refuse'}]]){const denied=await f.run(name,args);assert.equal(denied.isError,true,text(denied));}
+    assert.equal(await fs.readFile(file,'utf8'),'outside sample must stay');
+    const source=path.join(f.workspace,'inside.txt');await fs.writeFile(source,'inside source');const deleted=await f.run('recoverable_delete',{paths:[source],reason:'inside fixture'});assert.equal(deleted.isError,false,text(deleted));const id=deleted.value.entries[0].id;
+    const restored=await f.run('recoverable_restore',{id,reason:'inside recovery'});assert.equal(restored.isError,false,text(restored));const listing=await f.run('recovery_list',{});const record=listing.value.recent.find(e=>e.id===id);assert.equal(record.restoreDestination,source);assert.equal(record.audit.state,'complete');assert.equal(record.audit.transactionId,restored.value.audit.transactionId);
+  }finally{await f.ctx.fiber.dispose();}
+});
 test('real Windows shell: normal work runs, arbitrary workspace script deletion has a prior checkpoint, outside writes fail',async()=>{
   const f=await setup();
   try {

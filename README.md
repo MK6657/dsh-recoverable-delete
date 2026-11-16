@@ -2,7 +2,7 @@
 
 为 DeepSeek Harness 的文件误操作提供可恢复路径，兼顾使用 Purge 的 Windows 开发环境。
 
-**当前开发版本为 0.2.0，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
+**当前开发版本为 0.2.1，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
 
 ## 当前版本能做什么
 
@@ -23,6 +23,8 @@
 自动恢复通过专用工具执行，不放开恢复 CLI 或整个恢复库的写权限。宿主会话 ID 及已登记父子关系确定任务归属，跨重启保持。原位置有内容时恢复到 `.dsh-recovered` 副本目录，不自动覆盖；同一记录/选择 30 分钟内最多自动恢复 3 次。账号/应用会话、其他任务、链接、任意外部目标不开放自动恢复。直接在 agent 内运行 CLI `restore/reconcile` 仍拒绝。
 
 详细设计、空间预算和 Python 测试兼容性见 [DESIGN-0.2.0.md](DESIGN-0.2.0.md)。
+
+0.2.1 补充：`recovery_status.boundWorkspace` 明确报告会话绑定的工作区。shell workdir、working_directory 或子任务参数 cwd 不作为改绑授权；以宿主会话和状态返回为准。验收默认在该目录下创建全新专用样本；固定的外部测试目录需要人先在 GUI 添加工作区并新建会话。
 
 ## 适配和实测环境
 
@@ -87,6 +89,8 @@ node ./bin/recover.mjs reconcile
 ```
 
 模型内精确 `list` / `doctor` 由插件代理应答。`recovery_list` 返回当前任务的项目记录；`recoverable_restore` 只接收 ID、原因和可选的检查点相对路径，不接收任意目标。菜单修订 3 保留 PowerShell 5.1 多记录修复并支持项目库；CLI 拒绝多个 ID。免备份测试产物需要重新生成或人工从 Windows 回收站还原。
+
+`recovery_list` 还返回最近恢复的 `restoreDestination`、`audit` 和 `lastRestore`；未恢复时为 null。原 `status` 继续表示删除/备份状态，最近恢复状态在 `lastRestore.status`，不会把“删除时已回收”和“后来恢复成功”混成一个字段。完整收据证明该次恢复曾完成，不证明文件后来没有被修改或清理。损坏的收据会使 `restoreQuery.state=partial`，不伪称审计完整。
 
 ## 测试、证据与安全边界
 

@@ -1,32 +1,35 @@
-# 0.2.0 专用样本验收
+# 0.2.1 专用样本验收
 
-先确认 recovery_status 显示 version=0.2.0、projectRecovery=true、automaticRestore=true、启动探针通过。普通工作区是具体测试项目，不能是磁盘根或用户根。
+## 现有会话可直接执行的方案
 
-## 模型自行恢复
+先调用 recovery_status，确认 version=0.2.1、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
-准备一个新建专用样本文件，让模型对其调用 recoverable_delete（说明原因），然后使用返回 ID 调用 recoverable_restore（说明误删原因）。原位置应还原，status=restored、audit.state=complete；项目 .dsh-recovery 内有对应清单与去重对象。
+可直接发给 DSH：
 
-再测冲突：删除另一个样本后，在原路径创建内容不同的文件。调用 recoverable_restore 应返回 conflictCopy=true 和 .dsh-recovered 下的新副本，原路径的新内容保持不变。其他任务不能恢复该记录，不需要用真实账号数据验证。
+> 先调用 recovery_status，报告 boundWorkspace。仅在这个目录里新建一个不存在的、带随机后缀的专用验收子目录。不要修改任何已有真实文件，不修改插件，不碰账号、会话或备份库，也不通过改 cwd 或派子任务扩大范围。
+> 1. 用 write 新建 restore-me.txt，内容为专用测试文字，记录原字节或哈希。对它调用 recoverable_delete，再用返回 ID 调用 recoverable_restore。核对原内容恢复、audit.state=complete。
+> 2. 新建 conflict.txt，保存旧内容；删除后用 write 在原路径写入 NEW CONTENT MUST STAY，再调用 recoverable_restore。核对 conflictCopy=true、原路径保持新内容，旧内容在返回的副本里。
+> 3. 调用 recovery_create_temp，仅在返回的新目录写入可重建测试输出，再用 recoverable_delete 清理。应为 recycled-no-backup；对此记录请求 restore 应拒绝，不能假称有内容备份。普通 test/tmp 文件名不构成豁免。
+> 4. 调用 recovery_list，总结每条相关记录的 ID、原路径、status、lastRestore.status、restoreDestination 和 audit.state；也保留每次 restore 返回值做对照。未恢复记录的恢复字段应为 null，不能把原删除 status 当成恢复结论。
+> 5. 测试后保留冲突副本和普通验收样本供用户核对，不清空回收站或备份，不反复删除恢复。
 
-## 可信临时测试输出
+同一目录里新建的普通验收样本仍有内容备份；只有 recovery_create_temp 登记的可丢弃目录享有精确清理免备份。测试程序内部临时清理不逐条拦截，不保证全部进回收站。
 
-调用 recovery_create_temp，说明用途；只在返回的新目录内创建可重建测试输出，再调用 recoverable_delete 清理。应返回 recycled-no-backup，恢复目录没有为这批输出保存内容对象。这里不存真实数据的唯一副本或测试源码。
+## 使用事先准备的外部固定目录
 
-显式临时清理走回收站；测试程序自己在内部创建并删除的临时文件不逐条拦截，不保证全部进回收站。此类产物应可重新生成。
+如果要使用另一目录里的现成验收样本，需要人先在 GUI 将该目录添加为工作区，并在该工作区新建会话。新会话先检查 recovery_status.boundWorkspace 与目标项目完全一致，再开始删除。
 
-## 人工恢复和旧版兼容
+不能靠 shell workdir、working_directory、subagent 的 cwd 参数让已有父会话改绑。如果没有 GUI 操作条件，停止对外部样本的修改，采用上面的当前会话专用样本方案；不要绕过保护或不断换解释器试探。
 
-先确保安装路径正确、插件状态和启动探针通过。选择一个新建的专用测试项目，放入一个普通文件和一个含文件的目录，记录其内容或 SHA-256。不要使用真实账号库、会话或配置做删除样本。
+## 结果含义
 
-在 DSH 中要求只对这两个精确样本路径调用 `recoverable_delete`，默认走回收站，并返回恢复记录 ID。确认原位置消失、记录为 recycled 或有明确隔离状态，备份仍完整。
+- status 是原删除/备份事件状态，例如 recycled；最近恢复在 lastRestore 中。
+- restoreDestination 是最近持久收据中的目标；audit.state=complete 说明那次恢复的审计已完成，不保证目标后来没有被再次修改或清理。
+- restored-audit-pending 表示文件已恢复但审计待补记，交由人工菜单选 5 核验，不重复恢复。
+- incomplete 表示事务没有完整成功收据；restoreQuery.state=partial 表示部分收据无法读取，不得推断“全部审计完成”。
 
-从 Windows 资源管理器双击根目录 `DSH-Recovery.cmd`：
+## 人工恢复与旧版兼容
 
-1. 开头应显示“菜单修订 3”。选择 `2`；旧全局库和登记的项目库都能列出。
-2. 列表每条独立显示 `[编号]`、完整原路径、记录 ID；根据样本原路径选择数字编号。
-3. 原位置为空时，目标路径直接回车，恢复到显示的原位置。
-4. 检查 `status: restored`、`audit.state: complete`，再用相同步骤恢复另一个样本。
-5. 核对原始内容/哈希和目录结构。已有目标时不会覆盖，菜单默认另存副本。
-6. 黄色审计待补记表示文件已恢复，选 `5` 核验补记，不重复恢复。结束输入 `0`。
+从资源管理器双击 DSH-Recovery.cmd，菜单修订 3，选 2，按原路径和 ID 找到记录并输入数字编号。原路径为空时可直接回车；已有内容则另存副本。成功为 status=restored、audit.state=complete；退出选 0。
 
-菜单在 DSH agent 或其集成终端中拒绝启动是预期行为。模型自动恢复只能通过 recoverable_restore 工具完成，不能直接运行恢复 CLI。
+菜单在 DSH agent/集成终端中拒绝启动是预期行为。模型自动恢复使用 recoverable_restore，不能直接运行恢复 CLI。旧库、账号/应用数据恢复继续人工处理。

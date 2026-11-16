@@ -330,6 +330,26 @@ test('host session scopes persist and cannot be reassigned by changed ancestry o
   const restarted=new ProjectRecovery(f.config,new Vault(f.config));assert.equal(await restarted.task(exec({id:'child',parentSession:'parent'}),f.workspace),'parent');
   await assert.rejects(restarted.task(exec({id:'child',parentSession:'other'}),f.workspace),/Task identity/);await assert.rejects(restarted.task(exec(parent),f.root),/Task identity/);
 });
+
+test('recovery list separates deletion status from the latest durable restore destination and audit',async()=>{
+  const f=await projectFixture();const source=await put(path.join(f.workspace,'summary.txt'),'original summary bytes');const [deleted]=await f.manager.remove(f.project,[source],{owner:'scope',reason:'summary fixture',destination:'quarantine'});
+  let listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.lastRestore,null);assert.equal(listed.restoreDestination,null);assert.equal(listed.audit,null);
+  const restored=await f.manager.restore(f.project,'scope',{id:deleted.id,reason:'recover needed source'});
+  listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.status,'quarantined');assert.equal(listed.lastRestore.status,'restored');assert.equal(listed.restoreDestination,source);assert.equal(listed.audit.state,'complete');assert.equal(listed.audit.transactionId,restored.audit.transactionId);
+  const conflicted=await f.manager.restore(f.project,'scope',{id:deleted.id,reason:'compare old source with existing content'});
+  const auditBefore=await fs.readFile(path.join(f.project.root,'audit.jsonl'),'utf8');listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===deleted.id);assert.equal(listed.restoreDestination,conflicted.destination);assert.equal(listed.audit.transactionId,conflicted.audit.transactionId);assert.equal(listed.restoreQuery.state,'complete');assert.equal(await fs.readFile(path.join(f.project.root,'audit.jsonl'),'utf8'),auditBefore);
+  assert.deepEqual(await f.manager.list(f.project,'other-task'),[]);
+});
+
+test('recovery list distinguishes pending, prepared and unreadable receipts without claiming a successful restore',async()=>{
+  const f=await projectFixture();const source=await put(path.join(f.workspace,'pending-summary.txt'),'pending content');const snapshot=await f.manager.snapshot(f.project,source,{owner:'scope',reason:'pending fixture'});
+  const audit=f.project.vault.audit.bind(f.project.vault);f.project.vault.audit=async(event,details)=>{if(event==='restored')throw new Error('final audit unavailable');return audit(event,details);};
+  const outcome=await f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'pending summary test'});assert.equal(outcome.status,'restored-audit-pending');
+  let entry=(await f.manager.list(f.project,'scope'))[0];assert.equal(entry.audit.state,'pending');assert.equal(entry.lastRestore.status,'restored-audit-pending');
+  f.project.vault.audit=audit;await f.project.vault.reconcileRestores();entry=(await f.manager.list(f.project,'scope'))[0];assert.equal(entry.audit.state,'complete');
+  const receiptRoot=path.join(f.project.root,'state','restore-transactions');await fs.writeFile(path.join(receiptRoot,'later-prepared.json'),JSON.stringify({transactionId:'later-prepared',snapshotId:snapshot.id,destination:path.join(f.workspace,'not-published'),state:'prepared',at:'2099-01-01T00:00:00.000Z'}));
+  await fs.writeFile(path.join(receiptRoot,'broken.json'),'{not valid json');entry=(await f.manager.list(f.project,'scope'))[0];assert.equal(entry.lastRestore.status,'incomplete');assert.equal(entry.audit.state,'incomplete');assert.equal(entry.restoreQuery.state,'partial');assert.equal(entry.restoreQuery.unreadableReceipts,1);
+});
 test('restore publication never overwrites a file created after the preflight check',async()=>{
   const f=await fixture();const source=await put(path.join(f.workspace,'source.txt'),'old recovery bytes');const snapshot=await f.vault.snapshot(source);const destination=path.join(f.root,'racing-target.txt');const originalLink=fs.link;
   fs.link=async(from,to)=>{if(to===destination)await fs.writeFile(destination,'new concurrent work',{flag:'wx'});return originalLink(from,to);};
