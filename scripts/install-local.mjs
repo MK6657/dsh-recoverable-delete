@@ -1,0 +1,31 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
+import {pathToFileURL} from 'node:url';
+const profile=path.join(os.homedir(),'.dsh','profiles','desktop');
+const root=path.resolve(import.meta.dirname,'..');
+const backup=path.join('D:/dsh-recovery-vault/installation',`plugin-install-${Date.now()}`);
+fs.mkdirSync(backup,{recursive:true});
+const {default:YAML}=await import(pathToFileURL(path.join(profile,'node_modules/yaml/dist/index.js')).href);
+for(const name of ['package.json','pnpm-lock.yaml','cordis.patch.yml'])fs.copyFileSync(path.join(profile,name),path.join(backup,name));
+const packageFile=path.join(profile,'package.json');
+const pkg=JSON.parse(fs.readFileSync(packageFile,'utf8'));
+const beforeDependencies={...pkg.dependencies};
+const pluginName='dsh-recoverable-delete';
+const link=`link:${root.replaceAll('\\','/')}`;
+pkg.dependencies[pluginName]=link;
+if(!pkg.dsh.profile.bundles.includes(pluginName))pkg.dsh.profile.bundles.push(pluginName);
+const lockFile=path.join(profile,'pnpm-lock.yaml');
+const document=YAML.parseDocument(fs.readFileSync(lockFile,'utf8'));
+document.setIn(['importers','.','dependencies',pluginName],{specifier:link,version:link});
+const modulePath=path.join(profile,'node_modules',pluginName);
+if(fs.existsSync(modulePath)) {
+  if(fs.realpathSync(modulePath).toLowerCase()!==root.toLowerCase())throw new Error('An unrelated plugin installation already occupies this name.');
+}else fs.symlinkSync(root,modulePath,'junction');
+function write(file,text){const temp=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(temp,text);fs.renameSync(temp,file);}
+write(lockFile,String(document));write(packageFile,JSON.stringify(pkg,null,2)+'\n');
+const after=JSON.parse(fs.readFileSync(packageFile,'utf8'));
+for(const [name,version]of Object.entries(beforeDependencies))if(after.dependencies[name]!==version)throw new Error(`Existing dependency changed: ${name}`);
+const evidence={installedAt:new Date().toISOString(),plugin:pluginName,version:JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,source:root,profile,backup,existingDependenciesPreserved:true,existingProfilePatchUnchanged:fs.readFileSync(path.join(profile,'cordis.patch.yml'),'utf8')===fs.readFileSync(path.join(backup,'cordis.patch.yml'),'utf8')};
+write(path.join(root,'installation.json'),JSON.stringify(evidence,null,2)+'\n');console.log(JSON.stringify(evidence,null,2));

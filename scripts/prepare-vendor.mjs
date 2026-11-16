@@ -1,0 +1,14 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+import {pathToFileURL} from 'node:url';
+const host='D:/DeepSeek_dsh_win/resources/app/dsh';
+const require=createRequire(path.join(host,'package.json'));
+const directory=path.resolve(import.meta.dirname,'../lib/vendor');
+let text=fs.readFileSync(path.join(directory,'sandbox-local.official.js.txt'),'utf8');
+if(text.includes('[dsh-purge]')) throw new Error('Expected pristine official source.');
+text=text.replace(/from\s+"([^"\n]+)"/g,(original,specifier)=>specifier.startsWith('node:')?original:`from ${JSON.stringify(pathToFileURL(require.resolve(specifier)).href)}`);
+text=text.replaceAll('import.meta.resolve(', '__recoveryHostResolve(');
+const prelude=`// Official DeepSeek sandbox-local 0.2.2-rc.3 (MIT); only module resolution is adapted.\nimport {createRequire as recoveryRequire} from 'node:module';\nimport {pathToFileURL as recoveryURL} from 'node:url';\nconst __recoveryHostRequire=recoveryRequire(${JSON.stringify(path.join(host,'package.json'))});\nconst __recoveryHostResolve=(specifier)=>recoveryURL(__recoveryHostRequire.resolve(specifier)).href;\n`;
+fs.writeFileSync(path.join(directory,'sandbox-local.js'),prelude+text);
+console.log('Prepared exact-version private sandbox provider; host files unchanged.');

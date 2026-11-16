@@ -1,0 +1,3 @@
+# Preserve the accepted baseline byte-for-byte, including PowerShell UTF-8 BOM
+# and original CRLF files. This disables EOL conversion, not textual diffs.
+* -text

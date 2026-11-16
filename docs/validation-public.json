@@ -1,0 +1,38 @@
+{
+  "date": "2026-11-16T21:46:37+08:00",
+  "scope": "public source copy, independently rerun on the prepared Windows host",
+  "pluginVersion": "0.1.3",
+  "menuRevision": 2,
+  "hostVersion": "0.2.2-rc.3",
+  "purgeVersion": "1.7.18",
+  "runs": [
+    {
+      "nodeVersion": "24.21.0",
+      "tests": 45,
+      "passed": 45,
+      "failures": 0,
+      "skipped": 0,
+      "command": "node --test test/recovery.test.mjs test/harness.test.mjs"
+    },
+    {
+      "nodeVersion": "22.23.1",
+      "tests": 45,
+      "passed": 45,
+      "failures": 0,
+      "skipped": 0,
+      "command": "node --test test/recovery.test.mjs test/harness.test.mjs"
+    }
+  ],
+  "syntax": {
+    "javascriptAndMjsFiles": 12,
+    "powerShellScripts": 3,
+    "pythonScripts": "passed"
+  },
+  "baselineRuntimeFilesByteIdentical": 11,
+  "menuUtf8BomPreserved": true,
+  "vendorSourceHashVerified": true,
+  "usesRealWindowsRecycleBinAndNativeSandbox": true,
+  "generalGitHubRunnerCompatibilityClaimed": false,
+  "privateRuntimeLogsIncluded": false,
+  "originalInstalledSourceModified": false
+}

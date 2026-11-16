@@ -1,0 +1,9 @@
+- insert:
+    - id: recoverable-delete
+      name: dsh-recoverable-delete
+      inject: [tools]
+      config:
+        vaultRoot: 'D:/dsh-recovery-vault'
+        checkpointWorkspace: true
+        confineShell: true
+        defaultDestination: recycle

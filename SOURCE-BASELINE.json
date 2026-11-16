@@ -1,0 +1,31 @@
+{
+  "baseline": "0.1.3",
+  "menuRevision": 2,
+  "publishedDate": "2026-11-16",
+  "kind": "accepted Windows local-adaptation source baseline",
+  "runtimeFilesMatchInstalledBaselineByteForByte": true,
+  "sha256": {
+    "package.json": "05da32ad315116e6a380df471cbd48a7dbb63875b473f3e774879a50364c0eec",
+    "lib/index.js": "0751a9dcd93987ed470bb60593e740972f4cee44974353def636cb3e28501523",
+    "lib/policy.js": "5b8848632099a2a4172f2d7005ca24f96d838b93ab0c7c50c84b6b1544045344",
+    "lib/vault.js": "d3a7255ea377e016aaa9f8c705edb50c1e15fc7015da59c9aacb116fd3b7670c",
+    "lib/execution-context.js": "168476c80bbc670739109decacb7c1f5f37ce41e27a284f62a3f3f5ba6850d22",
+    "lib/vendor/sandbox-local.js": "2d946795745a2680327db334cb651e4214a0a5db2d5ac72ab6c8a5f06a9afd7a",
+    "lib/vendor/sandbox-local.official.js.txt": "3557bb25aaabd8c860055b767aeede31b5cd41600c37d2e5fda361e209705eb1",
+    "lib/vendor/provenance.json": "c4e731b271b89d6a0d3c9291e7115559a5b72a92b4bd15ce017f0151586386d4",
+    "lib/vendor/DeepSeek-LICENSE.txt": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+    "scripts/recovery-menu.ps1": "f4b3fa0fc84b6172036186f8a4a13c67ec016a7474f6d975e140b5474ef54035",
+    "bin/recover.mjs": "0dc505547c7b7a8522b135e5522ccfd0748926fff0f8dc20d819eef7e4138b66"
+  },
+  "publicationOnlyAdjustments": [
+    "Local username references in installer/tests replaced by current-user paths or synthetic test names.",
+    "Installer evidence reads the package version instead of a stale hardcoded 0.1.0.",
+    "Documentation rewritten for public use; private reports and local report generator omitted."
+  ],
+  "notImplemented": [
+    "Agent self-restoration",
+    "Project-local selective backup mode",
+    "Disposable-test-artifact backup exemption",
+    "User-authorized backup retirement"
+  ]
+}

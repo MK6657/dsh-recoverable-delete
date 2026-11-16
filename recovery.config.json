@@ -1,0 +1,12 @@
+{
+  "vaultRoot": "D:/dsh-recovery-vault",
+  "checkpointWorkspace": true,
+  "confineShell": true,
+  "defaultDestination": "recycle",
+  "maxFiles": 100000,
+  "maxBytes": 5368709120,
+  "maxDeletedFilesPerSession": 20000,
+  "maxDeletedBytesPerSession": 2147483648,
+  "maxDeletedFilesPerDay": 50000,
+  "maxDeletedBytesPerDay": 5368709120
+}

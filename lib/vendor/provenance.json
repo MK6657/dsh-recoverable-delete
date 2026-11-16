@@ -1,0 +1,7 @@
+{
+  "package": "@deepseek-ai/dsh-sandbox-local",
+  "version": "0.2.2-rc.3",
+  "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh-sandbox-local/-/dsh-sandbox-local-0.2.2-rc.3.tgz",
+  "integrity": "sha512-BN30BQZr7lFkDRYqpBPipGbW/vBUNifLjXwxLAML6Vvt0g3TWNjankEalp1SU86eguTGkhwVMjqFnUfRhelMPg==",
+  "sourceSha256": "3557bb25aaabd8c860055b767aeede31b5cd41600c37d2e5fda361e209705eb1"
+}
