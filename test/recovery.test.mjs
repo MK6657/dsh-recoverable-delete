@@ -506,3 +506,11 @@ test('restore record lookup failures hide internal paths and do not consume rest
   await assert.rejects(fs.stat(path.join(f.vault.root,'state','restore-budgets')),{code:'ENOENT'});
   const restored=await f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'valid record still restores'});assert.equal(restored.previousAttempts,0);assert.equal(await fs.readFile(restored.destination,'utf8'),'lookup original');assert.equal(await fs.readFile(source,'utf8'),'lookup original');
 });
+
+
+test('old snapshots retain unknown reason provenance without rewriting stored manifests',async()=>{
+  const f=await projectFixture();const file=await put(path.join(f.workspace,'legacy-reason.txt'),'old entry');const snapshot=await f.manager.snapshot(f.project,file,{owner:'scope',reason:'explicit reason'});assert.equal(snapshot.reasonProvided,true);
+  const manifestPath=path.join(f.project.root,'entries',snapshot.id,'manifest.json');const manifest=JSON.parse(await fs.readFile(manifestPath,'utf8'));delete manifest.reasonProvided;await fs.writeFile(manifestPath,JSON.stringify(manifest));await f.manager.remember(f.project,manifest);const before=await fs.readFile(manifestPath,'utf8');
+  const listed=(await f.manager.list(f.project,'scope')).find(e=>e.id===snapshot.id);assert.equal(listed.reasonProvided,null);assert.equal(await fs.readFile(manifestPath,'utf8'),before);
+  const restored=await f.manager.restore(f.project,'scope',{id:snapshot.id,reason:'compatible old snapshot'});assert.equal(restored.status,'restored');assert.equal(await fs.readFile(restored.destination,'utf8'),'old entry');
+});

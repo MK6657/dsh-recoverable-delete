@@ -1,22 +1,16 @@
-# 0.2.6 专用样本验收
+# 0.2.7 专用样本验收
 
-## 0.2.6 最小复测（优先执行）
+## 0.2.7 最小复测（优先执行）
 
-先调用 recovery_status 和 recovery_list，确认 version=0.2.6、active、shellConfinement=active、探针通过，并报告 boundWorkspace。保留测试结果，不清理回收站/恢复库。
+先 recovery_status 确认 version=0.2.7、active、shellConfinement=active、探针通过，报告 boundWorkspace。仅使用该工作区下全新随机专用样本；不改真实文件、不清空恢复库或回收站。
 
-只读命令须为单条受支持的字面量管道，不要追加未引用的 `; echo ...` 或换行收尾语句。`Out-Null` 本身也不在只读白名单，即使没有分号，读取恢复库的管道加它也会被拒绝；无需为验收刻意制造拒绝，直接显示结果或用 `Select-Object -First N` 限制输出即可。
+1. 对恢复库用单条字面量管道读取：`... | Sort-Object Name`、`... | Sort-Object -Property Name,LastWriteTime -Descending | Select-Object -First 3`、`... | Group-Object Name -NoElement`、`... | Select-Object -ExpandProperty Name | Sort-Object | Get-Unique`。应成功且不新增检查点。简式 `Where-Object Name -eq 'objects'` 应成功；脚本块过滤、Out-Null、分号附加语句继续受限，不换解释器绕过。
+2. 在专用子目录创建两个测试文件，触发一个检查点。用该检查点 ID 和目录型 relative_path 调 recoverable_restore，不给 recursive。应返回 RECOVERY_RECURSIVE_REQUIRED、restoreSelection 的文件/目录/字节数，不产生副本、不消耗恢复尝试。若确需整棵子树，显式加 recursive:true，应恢复目录和所有子项；原位置已有内容时副本另存，原件不覆盖。单文件选择不需要这个标记，整工作区自动回滚仍不允许。
+3. 普通删除整个专用目录后，用对应删除记录恢复，不给 recursive，应与旧版一样恢复整棵树。成功返回的 restoreSelection 指明 type、recursive、files、directories、bytes 和 relativePath。
+4. 用两个新测试文件验证删除原因：一个省略 reason，另一个显式写 `recoverable_delete file operation`。在 recovery_list 中两者 reason 文本可相同，但 reasonProvided 分别 false / true；旧记录应为 null，不把 null 当 false。只对显式非空白 reason 记 true，description 不算。
+5. 记录每次实际恢复落点：目标不存在回原处；目标被文件或目录占用时 conflictReason=target-exists；父路径被文件占用时 ancestor-not-directory。两类冲突均另存项目内 .dsh-recovered，随机后缀不是内容哈希。保留结果供核对。
 
-1. 仅以读取命令查看绑定项目及其 entries：`Get-ChildItem -LiteralPath '<目录>' | Format-List Length,LastWriteTime`、`... | Format-Table Name,Mode,Length -AutoSize`、`... | Select-Object -Property Name, Length -First 3`。应成功，执行前后 recovery_list 不新增检查点；固定 `(字面量读取管道).Count` 仍可用。
-2. 错误说明与 JSON 详情应有可见空行，JSON 能单独复制解析；errorCode 等结构化字段保持不变。调用 recoverable_restore，使用一个先确认不在 recovery_list 中的虚构 ID 和测试原因。应返回“record not found”及 RECOVERY_RECORD_NOT_FOUND，提示查 recovery_list，不包含 ENOENT 或控制库 project-entries 路径，不写恢复目标、不消耗恢复次数。
-3. 如需复验保护，仅在 boundWorkspace 下新建随机专用样本。嵌套 Write-Output (Set-Content ...) 仍须先有检查点；`Select-Object Name,([System.IO.File]::Delete(...))` 应拒绝且样本仍在。不能借逗号属性支持放行任意表达式，不改用其他拼写绕过。
-4. 从某个检查点请求恢复在其之后才创建的专用文件，应解释“checkpoint contains files present before its command; later-created files are not included”，现有文件保持不变。
-5. 拒绝消息中不再有通用 Operation stopped 或 native file patches 说明；原因和后续工具指引保留。简单删除目标不存在、复杂删除被拒绝和恢复记录不存在本来就应有不同原因，不能要求全部文本逐字相同。
-
-核对某条命令有没有新增备份时，在没有并发任务的条件下对比前后 recovery_list 的记录 ID、kind、at、reason，并对照工具结果。lastCheckpoint 只记录本进程受监督 shell 备份步骤的结果，不汇总原生 write/edit 等全部备份；启动时或目标原本不存在时可为 null；列表最多 50 条，reason 也不是执行成功证明。不能只用 lastCheckpoint 不变或条数不变得出“没有新增”的结论。
-
-命令执行失败也保留其执行前检查点，这是预期行为。非零退出可能已写入部分文件，不能据此标 unused、删除备份或反复清理。
-
-原删除/恢复、父级冲突副本、错误收据、重复恢复次数规则不变；已由独立进程完整回归。不需要为这次小修反复删除已有样本，也不要损坏真实元数据制造失败。
+检查点在对应命令之前保存；失败退出仍可能已经改动数据，所以检查点保留。查询条数有 10/50 窗口，核对是否新增应比较 ID/kind/at/reason 与工具结果，不只看 lastCheckpoint 或条数。
 
 ## 升级后的只读核对
 
@@ -29,7 +23,7 @@
 
 ## 需要功能验收时：现有会话专用样本
 
-先调用 recovery_status，确认 version=0.2.6、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
+先调用 recovery_status，确认 version=0.2.7、projectRecovery=true、automaticRestore=true、启动探针通过，并读取 boundWorkspace。它才是本会话的项目边界，不以 shell workdir、working_directory 或子任务参数 cwd 代替。
 
 可直接发给 DSH：
 

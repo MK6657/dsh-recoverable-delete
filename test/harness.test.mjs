@@ -424,3 +424,50 @@ test('project tool: unknown record IDs return scoped explanations and model-visi
     await assert.rejects(fs.stat(path.join(f.projectVault.root,'state','restore-transactions')),{code:'ENOENT'});await assert.rejects(fs.stat(path.join(f.config.vaultRoot,'state','restore-budgets')),{code:'ENOENT'});
   }finally{await f.ctx.fiber.dispose();}
 });
+
+test('checkpoint directory recovery requires explicit recursive scope before any attempt or copy',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const folder=path.join(f.workspace,'subtree');await fs.mkdir(path.join(folder,'nested'),{recursive:true});await fs.writeFile(path.join(folder,'one.txt'),'ONE');await fs.writeFile(path.join(folder,'nested','two.txt'),'TWO');await fs.writeFile(path.join(f.workspace,'unrelated.txt'),'KEEP');
+    const probe=await f.run('pwsh',{command:'Write-Output (1)',description:'subtree checkpoint fixture'});assert.equal(probe.isError,false,text(probe));
+    const checkpoint=(await f.run('recovery_list',{})).value.recent.find(e=>e.kind==='workspace-checkpoint');assert(checkpoint);
+    const before=await projectionFootprint(f);
+    for(const recursive of [undefined,false]){
+      const refused=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'subtree',reason:'do not silently restore all descendants',...(recursive===undefined?{}:{recursive})});assert.equal(refused.isError,true,text(refused));assert.equal(refused.meta.recovery.errorCode,'RECOVERY_RECURSIVE_REQUIRED');assert.deepEqual(refused.meta.recovery.restoreSelection,{type:'directory',recursive:true,relativePath:'subtree',files:2,directories:2,bytes:6});assert.equal(refused.meta.recovery.targetPublished,false);
+    }
+    assert.deepEqual((await projectionFootprint(f)).filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'),before.filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'));await assert.rejects(fs.stat(path.join(f.workspace,'.dsh-recovered')),{code:'ENOENT'});await assert.rejects(fs.stat(path.join(f.config.vaultRoot,'state','restore-budgets')),{code:'ENOENT'});await assert.rejects(fs.stat(path.join(f.projectVault.root,'state','restore-transactions')),{code:'ENOENT'});
+    const restored=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'subtree',recursive:true,reason:'explicitly need the complete selected subtree'});assert.equal(restored.isError,false,text(restored));assert.equal(restored.value.previousAttempts,0);assert.equal(restored.value.restoreSelection.files,2);assert.equal(restored.value.restoreSelection.bytes,6);assert.equal(restored.value.audit.state,'complete');assert.equal(await fs.readFile(path.join(restored.value.destination,'nested','two.txt'),'utf8'),'TWO');assert.equal(await fs.readFile(path.join(folder,'one.txt'),'utf8'),'ONE');assert.equal(await fs.readFile(path.join(f.workspace,'unrelated.txt'),'utf8'),'KEEP');
+    const file=await f.run('recoverable_restore',{id:checkpoint.id,relative_path:'subtree/one.txt',reason:'single file needs no recursive permission'});assert.equal(file.isError,false,text(file));assert.equal(file.value.restoreSelection.type,'file');assert.equal(file.value.restoreSelection.recursive,false);
+    const deleted=await f.run('recoverable_delete',{paths:[folder],reason:'ordinary directory fixture'});assert.equal(deleted.isError,false,text(deleted));const ordinary=await f.run('recoverable_restore',{id:deleted.value.entries[0].id,reason:'normal deleted directory still restores without a flag'});assert.equal(ordinary.isError,false,text(ordinary));assert.equal(ordinary.value.restoreSelection.files,2);assert.equal(ordinary.value.conflictCopy,false);
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('deletion reason provenance distinguishes omitted, blank and explicitly identical default text',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const expected=[];
+    for(const [name,reason,provided] of [['omitted',undefined,false],['blank','   ',false],['explicit','recoverable_delete file operation',true]]){
+      const file=path.join(f.workspace,name+'.txt');await fs.writeFile(file,'reason fixture '+name);const deleted=await f.run('recoverable_delete',{paths:[file],...(reason===undefined?{}:{reason})});assert.equal(deleted.isError,false,text(deleted));const id=deleted.value.entries[0].id;const manifest=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',id,'manifest.json'),'utf8'));assert.equal(manifest.reasonProvided,provided);if(reason===undefined)assert.equal(manifest.reason,'recoverable_delete file operation');expected.push([id,provided]);
+      const restored=await f.run('recoverable_restore',{id,reason:'new metadata must be included in scoped integrity registration'});assert.equal(restored.isError,false,text(restored));
+    }
+    const temporary=await f.run('recovery_create_temp',{reason:'provenance disposable fixture'});await fs.writeFile(path.join(temporary.value.directory,'output.txt'),'rebuildable');const tempDeleted=await f.run('recoverable_delete',{paths:[temporary.value.directory]});assert.equal(tempDeleted.isError,false,text(tempDeleted));assert.equal(tempDeleted.value.entries[0].status,'recycled-no-backup');const tm=JSON.parse(await fs.readFile(path.join(f.projectVault.root,'entries',tempDeleted.value.entries[0].id,'manifest.json'),'utf8'));assert.equal(tm.reasonProvided,false);
+    const list=(await f.run('recovery_list',{})).value.recent;for(const [id,provided] of expected)assert.equal(list.find(e=>e.id===id).reasonProvided,provided);
+    const events=(await fs.readFile(path.join(f.projectVault.root,'audit.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);for(const [id,provided] of expected)assert(events.some(e=>e.id===id&&e.event==='snapshot-ready'&&e.reasonProvided===provided));
+  }finally{await f.ctx.fiber.dispose();}
+});
+
+test('protected-store literal sorting grouping uniqueness and simple filters are read-only',async()=>{
+  const f=await setup({projectRecovery:true});
+  try{
+    const written=await f.run('write',{file_path:path.join(f.workspace,'sentinel.txt'),content:'must survive'});assert.equal(written.isError,false,text(written));
+    const before=await projectionFootprint(f);
+    for(const suffix of ['Sort-Object Name','Sort-Object -Property Name,LastWriteTime -Descending | Select-Object -First 2','Group-Object Name -NoElement','Group-Object -Property Name,Length -NoElement','Select-Object -ExpandProperty Name | Sort-Object | Get-Unique','Where-Object Name -eq objects']){
+      const outcome=await f.run('pwsh',{command:`Get-ChildItem -LiteralPath '${f.projectVault.root}' | ${suffix}`,description:'literal read-only data shaping'});assert.equal(outcome.isError,false,text(outcome));assert.equal(outcome.value.exitCode,0,text(outcome));
+    }
+    assert.deepEqual(await projectionFootprint(f),before);
+    for(const suffix of ["Sort-Object { Set-Content 'sentinel.txt' 'bad' }",'Where-Object { $_.Name -eq objects }','Group-Object Name; Write-Output extra','Sort-Object Name | Out-Null']){
+      const outcome=await f.run('pwsh',{command:`Get-ChildItem -LiteralPath '${f.projectVault.root}' | ${suffix}`,description:'new read names never authorize script blocks or multiple statements'});assert.equal(outcome.isError,true,text(outcome));
+    }
+    assert.equal(await fs.readFile(path.join(f.workspace,'sentinel.txt'),'utf8'),'must survive');assert.deepEqual((await projectionFootprint(f)).filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'),before.filter(r=>r[0]!==f.config.vaultRoot||r[1]!=='audit.jsonl'));
+  }finally{await f.ctx.fiber.dispose();}
+});

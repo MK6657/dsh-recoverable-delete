@@ -2,7 +2,7 @@
 
 为 DeepSeek Harness 的文件误操作提供可恢复路径，兼顾使用 Purge 的 Windows 开发环境。
 
-**当前开发版本为 0.2.6，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
+**当前开发版本为 0.2.7，菜单修订 3；已发布的 `v0.1.3` 标签保留原冻结基线。** 这是固定宿主版本和目录布局的 Windows 本地适配项目，不是开箱即用的跨平台插件，也不是系统级防删软件。
 
 ## 当前版本能做什么
 
@@ -14,7 +14,7 @@
 | 无法确定目标的修改类脚本 | 仍保留去重工作区检查点，排除恢复库及登记的可丢弃临时目录；失败不执行 |
 | 账号、会话、凭据、恢复库、插件源码等受保护路径 | 拒绝相应的删除/修改，检查父目录和路径链接 |
 | 人工恢复 | 从独立恢复菜单选择单条记录，校验内容后恢复；已有目标不覆盖 |
-| `recoverable_restore` | 本任务限定自动恢复；冲突另存，检查点必须指定具体相对路径 |
+| `recoverable_restore` | 本任务限定自动恢复；冲突另存，检查点须给具体相对路径，目录选择另须 recursive:true |
 | `recovery_create_temp` | 插件新建空的测试临时目录，其精确删除只走回收站，不保存内容副本 |
 | 审计故障 | 写目标前预检；恢复已完成但最终审计失败时明确返回待补记状态 |
 
@@ -43,6 +43,12 @@
 `lastCheckpoint` 是当前插件进程最近一次受监督 shell 备份步骤得到的记录 ID，可能是目标快照或工作区检查点；它不汇总原生 write/edit 等工具的全部备份，也不是历史检查点列表。启动时、或该备份目标原本不存在时可为 null，原历史仍在。判断某条命令是否新增备份，应在没有并发任务时对比前后 recovery_list 的 ID、kind、at 和 reason，结合该条工具调用结果；lastCheckpoint 不变或列表返回 50 条都不能单独证明没有新增记录。最近列表有窗口及任务范围限制，reason 也只是描述，不能单独证明执行结果。
 
 检查点在命令执行前保存；命令报错或非零退出后仍保留。失败命令可能已经修改部分文件，不能仅凭退出码把备份标成 unused 或自动清理。需要时按记录和相对路径恢复旧字节，保留当前成果及冲突副本。
+
+0.2.7 明确目录选择：检查点 `relative_path` 指向目录时会包含该目录及全部子项，必须显式传 `recursive:true`；未传时返回 RECOVERY_RECURSIVE_REQUIRED 和子树文件数/目录数/字节数，在写副本与计入次数前停止。只需单文件时给文件相对路径。普通“删除整个目录”的独立记录继续整体恢复，不另要求此标记。成功返回的 restoreSelection 描述实际选择，files 为普通文件数、directories 为目录数、bytes 为逻辑字节；旧删除记录的 files 字段仍按文件系统条目总数计数。整工作区自动回滚仍拒绝。
+
+新备份/删除清单和查询增加 reasonProvided：true 表示显式提供了非空白 reason，false 表示没有；description 或默认文案不算显式 reason，原 reason 文本保留。旧清单显示 null，表示历史来源未知，不推测、不改写旧审计。两个记录即使 reason 文本相同，也可区分是否明确提供。建议始终给删除原因。
+
+字面量查询新增 Sort-Object、Group-Object、Get-Unique（包括 Sort/Group 的简单属性列表），继续排除脚本块、计算属性、变量展开和分号附加语句。简式过滤 `Where-Object Name -eq 'objects'` 已支持；`Where-Object { ... }` 不是只读豁免形式。Out-Null 仍不在该白名单。不存在“所有过滤都不可用”的限制。
 
 ## 适配和实测环境
 
@@ -107,6 +113,17 @@ node ./bin/recover.mjs reconcile
 ```
 
 模型内精确 `list` / `doctor` 由插件代理应答。`recovery_list` 返回当前任务的项目记录；`recoverable_restore` 只接收 ID、原因和可选的检查点相对路径，不接收任意目标。菜单修订 3 保留 PowerShell 5.1 多记录修复并支持项目库；CLI 拒绝多个 ID。免备份测试产物需要重新生成或人工从 Windows 回收站还原。
+
+自动恢复的落点规则如下，均保留备份与已有内容：
+
+| 选择与当前路径 | 自动恢复落点 | 关键返回 |
+| --- | --- | --- |
+| 目标不存在且父路径可用 | 原路径 | conflictCopy=false，conflictReason=null |
+| 目标被文件或目录占用 | 项目 `.dsh-recovered/<记录ID>/<原名>-<随机后缀>` | conflictCopy=true，conflictReason=target-exists |
+| 某级父路径已变成普通文件 | 同上，另存项目内副本 | conflictCopy=true，conflictReason=ancestor-not-directory |
+| 检查点选中目录但没有 recursive:true | 先停止，不写恢复目标 | RECOVERY_RECURSIVE_REQUIRED，返回子树规模 |
+
+副本后缀是随机标识，不是内容哈希；最终实际路径看 destination/restoreDestination。目录恢复包含其全部子项，不是只恢复一个空目录。
 
 `recovery_list` 和 status.recent 返回最近恢复的 `restoreDestination`、`audit` 和 `lastRestore`；未恢复时为 null。原 `status` 继续表示删除/备份状态，最近一次恢复尝试状态在 `lastRestore.status`，可能为 restored、restored-audit-pending、failed 或 incomplete。`targetPublished=false` 表示该次尝试没有发布最终目标，暂存副本仍可能存在；null 表示旧收据或中断事务无法确定，不能解释成“没写入”。完整收据证明那次恢复曾完成，不证明目标后来未变。`receiptIndex.state=readable/partial` 只描述收据索引可读性，绝不表示“已恢复”；旧 restoreQuery 为兼容别名。输出相对路径优先使用 `lastRestore.relativePath`，旧 relative_path 别名保留，恢复工具输入仍兼容原 relative_path 参数。
 
