@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {spawnSync} from 'node:child_process';
 import { Vault, digest } from '../lib/vault.js';
+import {ProjectRecovery,catalogEntries} from '../lib/projects.js';
 import { assess, assertMutable, parsePatchTargets, simpleDeletion, shellAssessment, DELETION_MARKER, SOURCE_ROOT,hasDestructiveCommand } from '../lib/policy.js';
 
 const base=path.resolve('D:/dsh-recovery-tests');
@@ -238,14 +239,14 @@ test('human recovery menu explains inherited agent context before prompting or d
 // its own vault config. Tests exercise the real menu/CLI, never the user vault.
 async function menuFixture() {
   const f=await fixture();const install=path.join(f.root,'menu-install');
-  for(const relative of ['package.json','scripts/recovery-menu.ps1','bin/recover.mjs','lib/vault.js','lib/policy.js','lib/execution-context.js']){
+  for(const relative of ['package.json','scripts/recovery-menu.ps1','bin/recover.mjs','lib/vault.js','lib/policy.js','lib/projects.js','lib/execution-context.js']){
     const target=path.join(install,relative);await fs.mkdir(path.dirname(target),{recursive:true});await fs.copyFile(path.resolve(import.meta.dirname,'..',relative),target);
   }
   await fs.writeFile(path.join(install,'recovery.config.json'),JSON.stringify(f.config));
   const env={...process.env};delete env.DSH_SHELL;delete env.RECOVERABLE_DELETE_CONTEXT;
   env.PSModulePath=[path.join(process.env.WINDIR,'System32/WindowsPowerShell/v1.0/Modules'),path.join(process.env.ProgramFiles,'WindowsPowerShell/Modules')].join(';');
   f.menu=(engine,input)=>spawnSync(engine,['-NoProfile','-ExecutionPolicy','Bypass','-File',path.join(install,'scripts/recovery-menu.ps1')],{encoding:'utf8',windowsHide:true,timeout:20000,env,input});
-  return f;
+  f.install=install;return f;
 }
 function assertMenuSuccess(child){
   assert.equal(child.error,undefined);assert.equal(child.status,0,child.stderr);assert.equal(child.stderr,'');assert.doesNotMatch(child.stdout,/恢复未完成|恢复列表格式无效|记录编号无效/);
@@ -259,6 +260,88 @@ test('real menu enumerates empty, single and multiple JSON records in PowerShell
     await f.vault.snapshot(await put(path.join(f.workspace,'third.txt'),'third menu record'));
     child=f.menu(engine,'1\r\n0\r\n');assertMenuSuccess(child);assert.deepEqual([...child.stdout.matchAll(/^\[(\d+)\] /gm)].map(m=>m[1]),['1','2','3']);
     for(const entry of await f.vault.list())assert(child.stdout.includes('记录ID: '+entry.id));
+  }
+});
+
+async function projectFixture(options={}) {
+  const f=await fixture(options);const manager=new ProjectRecovery(f.config,f.vault);const project=await manager.open(f.workspace);
+  return {...f,manager,project};
+}
+test('project backup byte limit retains source, deduplicates content, and never clears prior records',async()=>{
+  const f=await projectFixture({maxProjectStoredBytes:8});const first=await put(path.join(f.workspace,'first.txt'),'12345678');
+  const initial=await f.manager.remove(f.project,[first],{owner:'scope',reason:'first'});
+  const same=await put(path.join(f.workspace,'same.txt'),'12345678');await f.manager.remove(f.project,[same],{owner:'scope',reason:'dedup'});
+  assert.equal((await fs.readdir(path.join(f.project.root,'objects'))).length,1);
+  const extra=await put(path.join(f.workspace,'extra.txt'),'more bytes');await assert.rejects(f.manager.remove(f.project,[extra],{owner:'scope',reason:'over limit'}),/storage budget/);
+  assert.equal(await fs.readFile(extra,'utf8'),'more bytes');assert((await f.project.vault.list()).some(e=>e.id===initial[0].id));
+});
+test('project initialization refuses an unrelated pre-existing recovery directory',async()=>{
+  const f=await fixture();const root=path.join(f.workspace,'.dsh-recovery');await fs.mkdir(root);await put(path.join(root,'existing.txt'),'human data');
+  await assert.rejects(new ProjectRecovery(f.config,f.vault).open(f.workspace),/unregistered/);assert.equal(await fs.readFile(path.join(root,'existing.txt'),'utf8'),'human data');
+});
+test('automatic restore validates durable ownership and metadata before writing',async()=>{
+  const f=await projectFixture();const source=await put(path.join(f.workspace,'original.txt'),'original');const [entry]=await f.manager.remove(f.project,[source],{owner:'scope',reason:'fixture'});
+  await assert.rejects(f.manager.restore(f.project,'different-task',{id:entry.id,reason:'fixture'}),/limited to this task/);
+  const file=path.join(f.project.root,'entries',entry.id,'manifest.json');const m=JSON.parse(await fs.readFile(file,'utf8'));m.original=path.join(f.workspace,'forged.txt');await fs.writeFile(file,JSON.stringify(m));
+  await assert.rejects(f.manager.restore(f.project,'scope',{id:entry.id,reason:'fixture'}),/integrity/);await assert.rejects(fs.stat(m.original),{code:'ENOENT'});await assert.rejects(fs.stat(source),{code:'ENOENT'});
+});
+test('automatic restore refuses damaged objects, links, and protected project storage selections',async()=>{
+  const f=await projectFixture();const source=await put(path.join(f.workspace,'source.txt'),'original');const m=await f.manager.snapshot(f.project,source,{owner:'scope',reason:'fixture'});
+  await fs.writeFile(path.join(f.project.root,'objects',m.entries[0].hash),'damaged');await fs.unlink(source);
+  await assert.rejects(f.manager.restore(f.project,'scope',{id:m.id,reason:'fixture'}),/integrity/);await assert.rejects(fs.stat(source),{code:'ENOENT'});
+  const outside=path.join(f.root,'outside');await put(path.join(outside,'keep.txt'),'outside');await fs.symlink(outside,path.join(f.workspace,'linked'),'junction');
+  const checkpoint=await f.manager.snapshot(f.project,f.workspace,{owner:'scope',reason:'links',kind:'workspace-checkpoint'});
+  await assert.rejects(f.manager.restore(f.project,'scope',{id:checkpoint.id,relative_path:'linked',reason:'fixture'}),/link/i);
+  assert.equal(await fs.readFile(path.join(outside,'keep.txt'),'utf8'),'outside');
+});
+test('disposable recycle failure retains test originals without creating backup objects or permanent fallback',async()=>{
+  const f=await projectFixture();const temp=await f.manager.temp(f.project,'scope','reproducible fixture');const sample=await put(path.join(temp.directory,'sample.txt'),'can regenerate');
+  f.project.vault.recycle=async()=>{throw new Error('simulated recycler failure');};
+  await assert.rejects(f.manager.remove(f.project,[temp.directory],{owner:'scope',reason:'cleanup'}),/no permanent-delete fallback/);
+  assert.equal(await fs.readFile(sample,'utf8'),'can regenerate');assert.deepEqual(await fs.readdir(path.join(f.project.root,'objects')),[]);
+});
+test('mixed disposable and ordinary batches retain verified backups for all targets',async()=>{
+  const f=await projectFixture();const temp=await f.manager.temp(f.project,'scope','reproducible fixture');await put(path.join(temp.directory,'temp.txt'),'temporary');const real=await put(path.join(f.workspace,'test-source.txt'),'real source');
+  const results=await f.manager.remove(f.project,[temp.directory,real],{owner:'scope',reason:'mixed cleanup',destination:'quarantine'});
+  assert(results.every(e=>e.backupMode!=='recycle-only'));assert.equal((await fs.readdir(path.join(f.project.root,'objects'))).length,2);
+});
+test('workspace checkpoints exclude only registered disposable roots and never snapshot the recovery store',async()=>{
+  const f=await projectFixture();const temp=await f.manager.temp(f.project,'scope','registered');await put(path.join(temp.directory,'output.txt'),'disposable');
+  const real=await put(path.join(f.workspace,'.dsh-test-tmp','human-existing','real.txt'),'keep this');
+  const checkpoint=await f.manager.snapshot(f.project,f.workspace,{owner:'scope',reason:'checkpoint',kind:'workspace-checkpoint'});
+  assert(!checkpoint.entries.some(e=>e.relative.includes('.dsh-recovery')));assert(!checkpoint.entries.some(e=>e.relative.includes(path.basename(temp.directory))));assert(checkpoint.entries.some(e=>path.join(f.workspace,e.relative)===real));
+});
+test('project deletion budgets remain profile-wide across workspaces',async()=>{
+  const f=await fixture({maxDeletedFilesPerDay:1});const manager=new ProjectRecovery(f.config,f.vault);const a=await manager.open(f.workspace);const another=path.join(f.root,'second-project');await fs.mkdir(another);const b=await manager.open(another);
+  await manager.remove(a,[await put(path.join(f.workspace,'one'),'first')],{owner:'a',reason:'fixture',destination:'quarantine'});
+  const second=await put(path.join(another,'two'),'second');await assert.rejects(manager.remove(b,[second],{owner:'b',reason:'fixture',destination:'quarantine'}),/Profile-wide/);assert.equal(await fs.readFile(second,'utf8'),'second');
+});
+test('partial batch failure retains discoverable authorization for already removed project files',async()=>{
+  const f=await projectFixture();const first=await put(path.join(f.workspace,'first.txt'),'first original');const second=await put(path.join(f.workspace,'second.txt'),'second original');const rename=fs.rename;
+  fs.rename=async(from,to)=>{if(from===second)throw Object.assign(new Error('simulated second move failure'),{code:'EPERM'});return rename(from,to);};
+  try{await assert.rejects(f.manager.remove(f.project,[first,second],{owner:'scope',reason:'batch failure fixture',destination:'quarantine'}),/second move failure/);}finally{fs.rename=rename;}
+  await assert.rejects(fs.stat(first),{code:'ENOENT'});assert.equal(await fs.readFile(second,'utf8'),'second original');
+  const records=await f.manager.list(f.project,'scope');const prior=records.find(e=>e.original===first);assert(prior);
+  const restored=await f.manager.restore(f.project,'scope',{id:prior.id,reason:'recover already moved item after a partial batch failure'});assert.equal(restored.status,'restored');assert.equal(await fs.readFile(first,'utf8'),'first original');
+});
+test('host session scopes persist and cannot be reassigned by changed ancestry or workspace',async()=>{
+  const f=await fixture();const manager=new ProjectRecovery(f.config,f.vault);const exec=header=>({agent:{session:{header}}});
+  const parent={id:'parent',cwd:f.workspace};assert.equal(await manager.task(exec(parent),f.workspace),'parent');assert.equal(await manager.task(exec({id:'child',parentSession:'parent'}),f.workspace),'parent');
+  const restarted=new ProjectRecovery(f.config,new Vault(f.config));assert.equal(await restarted.task(exec({id:'child',parentSession:'parent'}),f.workspace),'parent');
+  await assert.rejects(restarted.task(exec({id:'child',parentSession:'other'}),f.workspace),/Task identity/);await assert.rejects(restarted.task(exec(parent),f.root),/Task identity/);
+});
+test('restore publication never overwrites a file created after the preflight check',async()=>{
+  const f=await fixture();const source=await put(path.join(f.workspace,'source.txt'),'old recovery bytes');const snapshot=await f.vault.snapshot(source);const destination=path.join(f.root,'racing-target.txt');const originalLink=fs.link;
+  fs.link=async(from,to)=>{if(to===destination)await fs.writeFile(destination,'new concurrent work',{flag:'wx'});return originalLink(from,to);};
+  try{await assert.rejects(f.vault.restore(snapshot.id,{destination}),{code:'EEXIST'});}finally{fs.link=originalLink;}
+  assert.equal(await fs.readFile(destination,'utf8'),'new concurrent work');
+});
+test('human menu discovers legacy and project records and restores a selected project ID',{skip:process.platform!=='win32'},async()=>{
+  for(const engine of ['powershell.exe','pwsh.exe']){
+    const f=await menuFixture();const manager=new ProjectRecovery(f.config,f.vault);const project=await manager.open(f.workspace);const file=await put(path.join(f.workspace,'project-restore.txt'),'project default restore');
+    const [entry]=await manager.remove(project,[file],{owner:'scope',reason:'menu fixture',destination:'quarantine'});await f.vault.snapshot(await put(path.join(f.root,'legacy.txt'),'legacy fixture'));
+    const listing=await catalogEntries(f.vault,100);assert(listing.some(e=>e.id===entry.id&&e.vaultRoot===project.root));assert(listing.some(e=>e.vaultRoot===f.vault.root));const number=listing.findIndex(e=>e.id===entry.id)+1;
+    const child=f.menu(engine,`2\r\n${number}\r\n\r\n5\r\n0\r\n`);assertMenuSuccess(child);assert.match(child.stdout,/"status": "restored"/);assert.match(child.stdout,/"state": "complete"/);assert.equal(await fs.readFile(file,'utf8'),'project default restore');
   }
 });
 test('real menu selects a non-first record and restores both file and directory using default paths',{skip:process.platform!=='win32'},async()=>{

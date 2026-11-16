@@ -1,4 +1,4 @@
-# 安装与回退
+# 安装与回退（0.2.0）
 
 这是 Windows 上针对 DSH 0.2.2-rc.3 的本地适配源码；路径和依赖需要先审阅，不提供一键跨环境安装承诺。完整安装会修改当前用户的 desktop profile，必须先正常退出 DSH 并备份该 profile。不要以覆盖整份旧 profile 的方式回退后续插件。
 
@@ -12,7 +12,7 @@
 ## 路径与依赖
 
 1. 阅读 README 中的默认路径表，核对 `lib/index.js`、bundle、CLI 配置、恢复菜单、测试和 vendor 模块路径。它们不是全部由同一个配置项控制。
-2. `recovery.config.json` 与 `cordis.patch.yml` 的恢复库设置保持一致。回收脚本还校验路径名 `dsh-recovery-vault/entries/.../manifest.json`。
+2. `recovery.config.json` 与 `cordis.patch.yml` 的恢复库设置保持一致。projectRecovery=true 时普通内容放在项目 .dsh-recovery，旧全局库保留数据并保存小型索引；回收脚本同时校验这两类明确事务路径。
 3. `lib/vendor/sandbox-local.js` 中是原验收机器生成的绝对宿主模块引用。如果宿主路径不同，审阅 `scripts/prepare-vendor.mjs` 的 `host` 后生成副本；不要让生成器写入官方宿主文件。
 4. 已附官方原始源码、许可证和完整性记录。仅在需要重新获取时审阅运行 `scripts/prepare-vendor.py`，其从 npm 精确版本下载并检查包完整性，不执行包脚本；核对来源后再生成模块副本。
 5. `scripts/recovery-menu.ps1` 的中文源码使用 UTF-8 BOM，保持该编码以支持 Windows PowerShell 5.1。
@@ -33,9 +33,12 @@ node ./scripts/install-local.mjs
 
 启动 DSH 后调用 `recovery_status`，至少核实：
 
-- `version: 0.1.3`、`active: true`、`startupError: null`。
+- `version: 0.2.0`、`active: true`、`startupError: null`。
 - `shellConfinement: active`、`startupProbe.passed: true`。
 - `hostVersion: 0.2.2-rc.3`、实际宿主 Node 及源码指纹。
+- `projectRecovery: true`、`automaticRestore: true`；首次项目修改后 projectVault 应指向该工作区 .dsh-recovery。
+
+projectRecovery=false 是旧全局备份模式的兼容设置，不提供自动恢复或测试目录豁免。默认安装应使用 true；不应靠关闭保护绕过测试失败。Python 临时目录兼容仅注入受监督子进程，不修改全局 Python。
 
 界面能打开或插件显示 enabled 不足以证明原生沙箱已工作。先在专用测试项目验收，再用于真实任务。
 
